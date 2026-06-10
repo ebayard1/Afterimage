@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Albums ----
+    match /albums/{albumId} {
+      function isSignedIn() {
+        return request.auth != null;
+      }
+      function isMember() {
+        return isSignedIn() &&
+               request.auth.uid in resource.data.memberIds;
+      }
+      function isCreator() {
+        return isSignedIn() &&
+               request.auth.uid == resource.data.creatorId;
+      }
+      function joiningSelfOnly() {
+        // For updates that only add the requesting user to memberIds and change nothing else of substance.
+        let added = request.resource.data.memberIds.removeAll(resource.data.memberIds);
+        return added.size() == 1 && added[0] == request.auth.uid;
+      }
+      function leavingSelfOnly() {
+        let removed = resource.data.memberIds.removeAll(request.resource.data.memberIds);
+        return removed.size() == 1 && removed[0] == request.auth.uid;
+      }
+
+      // Create: only your own user is the creator and sole initial member.
+      allow create: if isSignedIn()
+                    && request.resource.data.creatorId == request.auth.uid
+                    && request.auth.uid in request.resource.data.memberIds;
+
+      // Read: only members can read.
+      allow read: if isMember();
+
+      // Update: creator can do anything; members can join/leave themselves.
+      allow update: if isCreator()
+                    || (isSignedIn() && (joiningSelfOnly() || leavingSelfOnly()))
+                    // any signed-in person can join by adding themselves (so QR scan works
+                    // even before they're a member)
+                    || (isSignedIn() && joiningSelfOnly() && !(request.auth.uid in resource.data.memberIds));
+
+      // Delete: creator only.
+      allow delete: if isCreator();
+
+      // ---- Shots subcollection ----
+      match /shots/{shotId} {
+        function parentMember() {
+          return isSignedIn() &&
+                 request.auth.uid in
+                 get(/databases/$(database)/documents/albums/$(albumId)).data.memberIds;
+        }
+        function parentRevealed() {
+          return get(/databases/$(database)/documents/albums/$(albumId)).data.revealAt
+                 <= request.time;
+        }
+
+        // Read shots only after reveal time AND only by members.
+        allow read: if parentMember() && parentRevealed();
+
+        // Create a shot only as yourself and only while album is still developing.
+        allow create: if parentMember()
+                      && request.resource.data.userId == request.auth.uid
+                      && !parentRevealed();
+
+        // Update (reactions) by any member after reveal — but only changes the reactions field.
+        allow update: if parentMember() && parentRevealed()
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                          .hasOnly(['reactions']);
+
+        // Delete: only album creator (so they can delete the album cleanly).
+        allow delete: if isSignedIn() &&
+                      request.auth.uid ==
+                      get(/databases/$(database)/documents/albums/$(albumId)).data.creatorId;
+      }
+    }
+  }
+}

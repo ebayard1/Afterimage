@@ -6,41 +6,50 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		467DDC612FB854B7007535DA /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 467DDC602FB854B7007535DA /* FirebaseAuth */; };
+		467DDC632FB854B7007535DA /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 467DDC622FB854B7007535DA /* FirebaseFirestore */; };
+		467DDC652FB854B7007535DA /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 467DDC642FB854B7007535DA /* FirebaseStorage */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
-		46340E1D2F9B488F00523AF7 /* Afterimage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Afterimage.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		467DDC4F2FB8514E007535DA /* afterimage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = afterimage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		46340E1F2F9B488F00523AF7 /* Afterimage */ = {
+		467DDC512FB8514E007535DA /* afterimage */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Afterimage;
+			path = afterimage;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		46340E1A2F9B488F00523AF7 /* Frameworks */ = {
+		467DDC4C2FB8514E007535DA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				467DDC612FB854B7007535DA /* FirebaseAuth in Frameworks */,
+				467DDC632FB854B7007535DA /* FirebaseFirestore in Frameworks */,
+				467DDC652FB854B7007535DA /* FirebaseStorage in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		46340E142F9B488F00523AF7 = {
+		467DDC462FB8514E007535DA = {
 			isa = PBXGroup;
 			children = (
-				46340E1F2F9B488F00523AF7 /* Afterimage */,
-				46340E1E2F9B488F00523AF7 /* Products */,
+				467DDC512FB8514E007535DA /* afterimage */,
+				467DDC502FB8514E007535DA /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		46340E1E2F9B488F00523AF7 /* Products */ = {
+		467DDC502FB8514E007535DA /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				46340E1D2F9B488F00523AF7 /* Afterimage.app */,
+				467DDC4F2FB8514E007535DA /* afterimage.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,64 +57,70 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		46340E1C2F9B488F00523AF7 /* Afterimage */ = {
+		467DDC4E2FB8514E007535DA /* afterimage */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 46340E282F9B489100523AF7 /* Build configuration list for PBXNativeTarget "Afterimage" */;
+			buildConfigurationList = 467DDC5A2FB85150007535DA /* Build configuration list for PBXNativeTarget "afterimage" */;
 			buildPhases = (
-				46340E192F9B488F00523AF7 /* Sources */,
-				46340E1A2F9B488F00523AF7 /* Frameworks */,
-				46340E1B2F9B488F00523AF7 /* Resources */,
+				467DDC4B2FB8514E007535DA /* Sources */,
+				467DDC4C2FB8514E007535DA /* Frameworks */,
+				467DDC4D2FB8514E007535DA /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				46340E1F2F9B488F00523AF7 /* Afterimage */,
+				467DDC512FB8514E007535DA /* afterimage */,
 			);
-			name = Afterimage;
+			name = afterimage;
 			packageProductDependencies = (
+				467DDC602FB854B7007535DA /* FirebaseAuth */,
+				467DDC622FB854B7007535DA /* FirebaseFirestore */,
+				467DDC642FB854B7007535DA /* FirebaseStorage */,
 			);
-			productName = Afterimage;
-			productReference = 46340E1D2F9B488F00523AF7 /* Afterimage.app */;
+			productName = afterimage;
+			productReference = 467DDC4F2FB8514E007535DA /* afterimage.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		46340E152F9B488F00523AF7 /* Project object */ = {
+		467DDC472FB8514E007535DA /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2640;
-				LastUpgradeCheck = 2640;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					46340E1C2F9B488F00523AF7 = {
-						CreatedOnToolsVersion = 26.4.1;
+					467DDC4E2FB8514E007535DA = {
+						CreatedOnToolsVersion = 26.5;
 					};
 				};
 			};
-			buildConfigurationList = 46340E182F9B488F00523AF7 /* Build configuration list for PBXProject "Afterimage" */;
+			buildConfigurationList = 467DDC4A2FB8514E007535DA /* Build configuration list for PBXProject "afterimage" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
 			);
-			mainGroup = 46340E142F9B488F00523AF7;
+			mainGroup = 467DDC462FB8514E007535DA;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				467DDC5F2FB854B7007535DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 46340E1E2F9B488F00523AF7 /* Products */;
+			productRefGroup = 467DDC502FB8514E007535DA /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				46340E1C2F9B488F00523AF7 /* Afterimage */,
+				467DDC4E2FB8514E007535DA /* afterimage */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		46340E1B2F9B488F00523AF7 /* Resources */ = {
+		467DDC4D2FB8514E007535DA /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -115,7 +130,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		46340E192F9B488F00523AF7 /* Sources */ = {
+		467DDC4B2FB8514E007535DA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -125,7 +140,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		46340E262F9B489100523AF7 /* Debug */ = {
+		467DDC582FB85150007535DA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -177,7 +192,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -188,7 +203,7 @@
 			};
 			name = Debug;
 		};
-		46340E272F9B489100523AF7 /* Release */ = {
+		467DDC592FB85150007535DA /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -234,7 +249,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -244,7 +259,7 @@
 			};
 			name = Release;
 		};
-		46340E292F9B489100523AF7 /* Debug */ = {
+		467DDC5B2FB85150007535DA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -253,6 +268,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "afterimage uses your camera to capture shots for shared albums.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "afterimage uses your microphone to record short voice notes that attach to your shots.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "afterimage saves revealed shots to your camera roll when you tap save.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -263,7 +281,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ethanbayard.Afterimage;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ethanbayard.afterimage;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -275,7 +293,7 @@
 			};
 			name = Debug;
 		};
-		46340E2A2F9B489100523AF7 /* Release */ = {
+		467DDC5C2FB85150007535DA /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -284,6 +302,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "afterimage uses your camera to capture shots for shared albums.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "afterimage uses your microphone to record short voice notes that attach to your shots.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "afterimage saves revealed shots to your camera roll when you tap save.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -294,7 +315,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ethanbayard.Afterimage;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ethanbayard.afterimage;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -309,25 +330,54 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		46340E182F9B488F00523AF7 /* Build configuration list for PBXProject "Afterimage" */ = {
+		467DDC4A2FB8514E007535DA /* Build configuration list for PBXProject "afterimage" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				46340E262F9B489100523AF7 /* Debug */,
-				46340E272F9B489100523AF7 /* Release */,
+				467DDC582FB85150007535DA /* Debug */,
+				467DDC592FB85150007535DA /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		46340E282F9B489100523AF7 /* Build configuration list for PBXNativeTarget "Afterimage" */ = {
+		467DDC5A2FB85150007535DA /* Build configuration list for PBXNativeTarget "afterimage" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				46340E292F9B489100523AF7 /* Debug */,
-				46340E2A2F9B489100523AF7 /* Release */,
+				467DDC5B2FB85150007535DA /* Debug */,
+				467DDC5C2FB85150007535DA /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		467DDC5F2FB854B7007535DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		467DDC602FB854B7007535DA /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 467DDC5F2FB854B7007535DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		467DDC622FB854B7007535DA /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 467DDC5F2FB854B7007535DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		467DDC642FB854B7007535DA /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 467DDC5F2FB854B7007535DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
-	rootObject = 46340E152F9B488F00523AF7 /* Project object */;
+	rootObject = 467DDC472FB8514E007535DA /* Project object */;
 }
