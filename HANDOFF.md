@@ -1,6 +1,11 @@
 # Afterimage — Handoff (continue in a new chat)
 
-_Last updated 2026-07-22 (evening session). Paste this into a new chat to pick up where we left off._
+_Last updated 2026-07-22 (late evening). Paste this into a new chat to pick up where we left off._
+
+> **Git state: ALL of this is COMMITTED** as `8df8803` on `feat/full-app-rebuild`
+> ("Rebuild camera as physical shell, go live-only, and refine film-strip chrome",
+> 112 files). Working tree is clean. A `.gitignore` now excludes `afterimage/build/`
+> and `functions/node_modules/`.
 
 ## What this is
 **Afterimage** — a "disposable camera for groups." Start a roll with friends, shoot blind
@@ -25,7 +30,7 @@ can install it.
   no `project.pbxproj` edits needed.
 - Claude auto-memory has a `device-deploy.md` note with the exact build+install commands.
 
-## ✅ Done 2026-07-21/22 session (all compiles clean, installed on the iPhone; NOT committed)
+## ✅ Done 2026-07-21/22 session (all compiles clean, installed on the iPhone, committed)
 
 **Film-strip edge print (`Components/RollPostElements.swift`):**
 1. **Candle flicker** replaced the old sliding shimmer (which washed white and hard-reset).
@@ -76,11 +81,10 @@ can install it.
 2. **Apple Music integration** for roll soundtracks (user wants the free/no-subscription path —
    likely MusicKit preview clips or user-library playback; design TBD).
 3. **Deploy functions** (older change: self-activity on the wire) — `firebase deploy --only functions`.
-4. **Commit to git** — branch `feat/full-app-rebuild` has ALL of this uncommitted on disk.
-5. **TestFlight**: build 1.0 (3) archive flow was in progress last month (External Testing +
+4. **TestFlight**: build 1.0 (3) archive flow was in progress last month (External Testing +
    Public Link recommended). Camera/UI has changed a lot since — bump build number when archiving.
-6. **Decision: lower the iOS 26 minimum?**
-7. On-device verify of the new camera: shell fit, counter position/size, button hit targets —
+5. **Decision: lower the iOS 26 minimum?**
+6. On-device verify of the new camera: shell fit, counter position/size, button hit targets —
    user may want coordinate nudges.
 
 ## Build / verify commands
@@ -106,4 +110,4 @@ cd ~/Desktop/Afterimage && firebase deploy --only storage,firestore:rules,functi
 - DEBUG builds launch signed out on fresh install (`signOutIfFreshBuild()`, DEBUG only).
 - More history in `SESSION_LOG.md` and `MORNING_BRIEF.md`.
 
-_All changes saved to disk, NOT committed. `git diff` in `~/Desktop/Afterimage` to review._
+_Everything committed as `8df8803` on `feat/full-app-rebuild`; only this HANDOFF.md edit is newer._
