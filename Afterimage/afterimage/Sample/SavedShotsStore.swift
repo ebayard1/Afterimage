@@ -1,43 +1,47 @@
 import SwiftUI
-import Combine
 
-/// Observable @AppStorage-backed store for shots the user has bookmarked.
-/// Sample-only mode — persists across launches via UserDefaults but is purely
-/// local. Each shot is identified by its stable `id` (or the sample shot id).
+/// A bookmarked shot, persisted locally on the device.
+struct SavedShot: Codable, Identifiable, Hashable {
+    let id: String          // the shot's id
+    let photoURL: String
+    let albumName: String
+}
+
+/// Observable, device-local store for shots the user has bookmarked. Persists
+/// across launches via UserDefaults (JSON). Stores enough to render the SAVED
+/// rail without re-fetching from Firestore.
 @Observable
 final class SavedShotsStore {
     static let shared = SavedShotsStore()
 
-    private let defaultsKey = "afterimage.savedShotIds"
-    private(set) var savedShotIds: Set<String>
+    private let defaultsKey = "afterimage.savedShots"
+    private(set) var saved: [SavedShot]
 
     private init() {
-        let raw = UserDefaults.standard.array(forKey: defaultsKey) as? [String] ?? []
-        self.savedShotIds = Set(raw)
+        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+           let decoded = try? JSONDecoder().decode([SavedShot].self, from: data) {
+            self.saved = decoded
+        } else {
+            self.saved = []
+        }
     }
 
-    func isSaved(_ id: String) -> Bool { savedShotIds.contains(id) }
+    func isSaved(_ id: String) -> Bool { saved.contains { $0.id == id } }
 
-    func toggle(_ id: String) {
-        if savedShotIds.contains(id) {
-            savedShotIds.remove(id)
+    /// Toggle a bookmark. Newest saves go to the front of the rail.
+    func toggle(id: String, photoURL: String, albumName: String) {
+        if isSaved(id) {
+            saved.removeAll { $0.id == id }
         } else {
-            savedShotIds.insert(id)
+            saved.insert(SavedShot(id: id, photoURL: photoURL,
+                                   albumName: albumName), at: 0)
         }
         persist()
     }
 
-    func save(_ id: String) {
-        savedShotIds.insert(id)
-        persist()
-    }
-
-    func unsave(_ id: String) {
-        savedShotIds.remove(id)
-        persist()
-    }
-
     private func persist() {
-        UserDefaults.standard.set(Array(savedShotIds), forKey: defaultsKey)
+        if let data = try? JSONEncoder().encode(saved) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
     }
 }

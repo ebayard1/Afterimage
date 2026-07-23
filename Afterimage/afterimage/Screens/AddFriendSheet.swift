@@ -3,25 +3,33 @@ import SwiftUI
 struct AddFriendSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ToastCenter.self) private var toast
+    @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
+    @State private var friendService = FriendService()
     @State private var query = ""
     @State private var sentTo: Set<String> = []
+    @State private var searchResults: [UserProfile] = []
+    @State private var searchTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
 
-    /// Sample "people you might know" — friends-of-friends in the network.
-    private let suggested: [SampleData.SampleFriend] = [
-        .init(username: "@parker", displayName: "Parker Adams", mutualAlbums: 0, mutualFriends: 4, photoSeed: "parker"),
-        .init(username: "@quinn",  displayName: "Quinn Diaz",   mutualAlbums: 0, mutualFriends: 3, photoSeed: "quinn"),
-        .init(username: "@rae",    displayName: "Rae Park",     mutualAlbums: 0, mutualFriends: 6, photoSeed: "rae"),
-        .init(username: "@oliver", displayName: "Oliver Schmidt", mutualAlbums: 0, mutualFriends: 2, photoSeed: "oliver"),
-        .init(username: "@iris",   displayName: "Iris Bell",    mutualAlbums: 0, mutualFriends: 5, photoSeed: "iris"),
-    ]
+    /// Live username search results.
+    private var results: [PersonRef] {
+        searchResults.map { $0.asPersonRef }
+    }
 
-    private var filtered: [SampleData.SampleFriend] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return suggested }
-        return suggested.filter {
-            $0.username.lowercased().contains(q) ||
-            $0.displayName.lowercased().contains(q)
+    private var sectionTitle: String {
+        query.isEmpty ? "SEARCH BY @USERNAME" : "RESULTS"
+    }
+
+    private func runSearch() {
+        searchTask?.cancel()
+        let q = query
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if Task.isCancelled { return }
+            let found = (try? await users.search(prefix: q, excluding: auth.uid)) ?? []
+            if Task.isCancelled { return }
+            await MainActor.run { searchResults = found }
         }
     }
 
@@ -42,6 +50,7 @@ struct AddFriendSheet: View {
                                 .foregroundStyle(Palette.textPrimary)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
+                                .onChange(of: query) { _, _ in runSearch() }
                         }
                         .padding(.horizontal, 14).padding(.vertical, 11)
                         .background(Palette.surface)
@@ -54,12 +63,18 @@ struct AddFriendSheet: View {
                         .clipShape(Capsule())
                         .animation(Motion.tap, value: searchFocused)
 
-                        SectionLabel(text: "PEOPLE YOU MAY KNOW")
+                        SectionLabel(text: sectionTitle)
                         VStack(spacing: 8) {
-                            ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, f in
+                            ForEach(Array(results.enumerated()), id: \.element.id) { idx, p in
                                 ScrollFadeIn(delay: Double(idx) * 0.05, distance: 12) {
-                                    row(f).pressEffect()
+                                    row(p).pressEffect()
                                 }
+                            }
+                            if !query.isEmpty && results.isEmpty {
+                                Text("no one found for \u{201C}\(query)\u{201D}")
+                                    .font(.custom("Times New Roman", size: 12)).italic()
+                                    .foregroundStyle(Palette.textTertiary)
+                                    .frame(maxWidth: .infinity).padding(.vertical, 16)
                             }
                         }
 
@@ -111,9 +126,9 @@ struct AddFriendSheet: View {
         }
     }
 
-    private func row(_ f: SampleData.SampleFriend) -> some View {
+    private func row(_ p: PersonRef) -> some View {
         HStack(spacing: 10) {
-            AsyncImage(url: URL(string: "https://picsum.photos/seed/\(f.photoSeed)/120/120")) { phase in
+            AsyncImage(url: avatarURL(p)) { phase in
                 switch phase {
                 case .success(let img): img.resizable().scaledToFill()
                 default: ShimmerPlaceholder()
@@ -125,22 +140,17 @@ struct AddFriendSheet: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(f.displayName)
+                Text(p.displayName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
-                Text("\(f.username) · \(f.mutualFriends) mutual friend\(f.mutualFriends == 1 ? "" : "s")")
+                Text(subtitle(for: p))
                     .font(.system(size: 11)).italic()
                     .foregroundStyle(Palette.textTertiary)
             }
             Spacer()
 
-            let sent = sentTo.contains(f.username)
-            Button {
-                if !sent {
-                    sentTo.insert(f.username)
-                    toast.success("request sent to \(f.username)")
-                }
-            } label: {
+            let sent = sentTo.contains(p.id)
+            Button { sendRequest(to: p, alreadySent: sent) } label: {
                 Text(sent ? "REQUESTED" : "+ ADD")
                     .font(.custom("Bebas Neue", size: 12)).tracking(2)
                     .foregroundStyle(sent ? Palette.textTertiary : .black)
@@ -155,5 +165,27 @@ struct AddFriendSheet: View {
         .padding(10)
         .background(Palette.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.border, lineWidth: 1))
+    }
+
+    private func avatarURL(_ p: PersonRef) -> URL? {
+        if let urlStr = p.photoURL, !urlStr.isEmpty { return URL(string: urlStr) }
+        if let seed = p.photoSeed { return URL(string: "https://picsum.photos/seed/\(seed)/120/120") }
+        return nil
+    }
+
+    private func subtitle(for p: PersonRef) -> String {
+        if let m = p.mutualFriends { return "\(p.handle) · \(m) mutual friend\(m == 1 ? "" : "s")" }
+        return p.handle
+    }
+
+    private func sendRequest(to p: PersonRef, alreadySent: Bool) {
+        guard !alreadySent else { return }
+        sentTo.insert(p.id)
+        guard let fromUid = auth.uid, let toUid = p.uid else { return }
+        Task {
+            do { try await friendService.sendRequest(from: fromUid, to: toUid)
+                 toast.success("request sent to \(p.handle)") }
+            catch { toast.error("couldn't send request") }
+        }
     }
 }

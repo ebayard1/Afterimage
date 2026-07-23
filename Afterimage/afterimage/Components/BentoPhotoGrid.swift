@@ -15,12 +15,11 @@ import SwiftUI
 // differently.
 //
 // Each tile is wrapped in a Double-Bezel container (outer shell + inner core)
-// and gets the album's film-stock grade, magnetic press physics, and a smooth
-// 800ms blur-fade scroll entry animation.
+// with magnetic press physics and a smooth 800ms blur-fade scroll entry
+// animation.
 
 struct BentoPhotoGrid: View {
     let shots: [Shot]
-    let filmStock: FilmStock?
     var onTapShot: (Int) -> Void = { _ in }
 
     var body: some View {
@@ -159,10 +158,10 @@ struct BentoPhotoGrid: View {
         }
     }
 
-    // MARK: Tile — Double-Bezel + magnetic press + film-stock grade
+    // MARK: Tile — Double-Bezel + magnetic press
     //
-    // Outer shell is a thin gold-tinted hairline; inner core is a clipped photo
-    // with the album's film stock grade applied. Hero tiles get a larger outer
+    // Outer shell is a thin gold-tinted hairline; inner core is a clipped photo.
+    // Hero tiles get a larger outer
     // radius (24pt) and the others get a smaller one (10pt) so the hierarchy
     // is visible at first glance.
 
@@ -178,7 +177,6 @@ struct BentoPhotoGrid: View {
                     switch phase {
                     case .success(let img):
                         img.resizable().scaledToFill()
-                            .filmStockGrade(filmStock)
                     default:
                         ShimmerPlaceholder()
                     }

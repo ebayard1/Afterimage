@@ -4,6 +4,8 @@ import Combine
 struct HomeView: View {
     @Environment(AuthService.self) private var auth
     @State private var albumService = AlbumService()
+    @State private var activityService = ActivityService()
+    @State private var notifService = NotificationService()
     @State private var showCreate = false
     @State private var showJoin = false
     @State private var showNotifications = false
@@ -12,16 +14,52 @@ struct HomeView: View {
     @State private var expandedAlbumIds: Set<String> = []
     @State private var now = Date()
     @State private var onThisDayAlbum: Album?
+    @State private var slideshowAlbum: Album?
     @State private var isWindingFilm = false
     @AppStorage("hasSeenFeedCoach") private var hasSeenFeedCoach = false
     @State private var showFeedCoach = false
+    /// True while the feed is actively scrolling — drives the film-strip glare
+    /// fade (full while scrolling, subtle at rest). See `ScrollSheen`.
+    @State private var feedScrolling = false
+
+    /// Activity rail source — the live fanned-out feed.
+    private var railEvents: [ActivityEvent] {
+        activityService.items.map { item in
+            ActivityEvent(
+                kind: item.eventKind,
+                actorUsername: item.actorUsername,
+                actorPhotoSeed: "",
+                actorPhotoURL: item.actorPhotoURL,
+                albumName: item.albumName,
+                detail: item.detail,
+                happenedAt: item.happenedAt
+            )
+        }
+    }
 
     private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
-    /// Sample-only mode — never reads from Firestore. The shoebox is curated.
-    private var allAlbums: [Album] { SampleData.albums }
+    private var allAlbums: [Album] { albumService.albums }
     private var developing: [Album] { allAlbums.filter { !$0.isRevealed } }
     private var revealed:   [Album] { allAlbums.filter {  $0.isRevealed } }
+
+    /// "On this day" — a revealed roll from a prior year on today's calendar day.
+    private var onThisDay: OnThisDayMemory? {
+        let cal = Calendar.current
+        let today = cal.dateComponents([.month, .day], from: now)
+        let thisYear = cal.component(.year, from: now)
+        let match = revealed.first { a in
+            let c = cal.dateComponents([.month, .day, .year], from: a.createdAt)
+            return c.month == today.month && c.day == today.day && (c.year ?? thisYear) < thisYear
+        }
+        guard let album = match else { return nil }
+        let years = thisYear - cal.component(.year, from: album.createdAt)
+        return OnThisDayMemory(yearsAgo: max(1, years), album: album,
+                               teaserPhotoURL: album.coverPhotoURL)
+    }
+
+    /// The slideshow loads its own shots live, so nothing is passed in.
+    private func displayShots(for album: Album) -> [Shot] { [] }
 
     var body: some View {
         NavigationStack {
@@ -59,11 +97,11 @@ struct HomeView: View {
                         ScrollView {
                             // Live friend activity rail — non-scrolling-list content
                             // glued to the top so it sits inside the scroll view.
-                            ActivityRail(events: SampleData.activityEvents)
+                            ActivityRail(events: railEvents)
                                 .padding(.bottom, 8)
 
                             VStack(alignment: .leading, spacing: 28) {
-                                if let memory = SampleData.onThisDay {
+                                if let memory = onThisDay {
                                     OnThisDayCard(memory: memory) {
                                         // Open the memory's album just like tapping it in the feed.
                                         // Pushes via NavigationStack value binding.
@@ -99,7 +137,10 @@ struct HomeView: View {
                                     ForEach(Array(revealed.enumerated()), id: \.element.id) { idx, album in
                                         ScrollFadeIn(delay: Double(idx) * 0.08 + 0.1) {
                                         VStack(spacing: 14) {
-                                            NavigationLink(value: album) {
+                                            Button {
+                                                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                                slideshowAlbum = album
+                                            } label: {
                                                 AlbumRow(
                                                     album: album, now: now, index: idx,
                                                     onTapMembers: { membersSheetAlbum = album },
@@ -108,7 +149,7 @@ struct HomeView: View {
                                             }
                                             .buttonStyle(.plain)
                                             .accessibilityLabel("\(album.name), developed roll, \(album.memberIds.count) members")
-                                            .accessibilityHint("Double-tap to open the roll. Long-press for more actions.")
+                                            .accessibilityHint("Double-tap to play the slideshow. Long-press for more actions.")
                                             .contextMenu {
                                                 rollContextMenu(album: album)
                                             }
@@ -137,6 +178,10 @@ struct HomeView: View {
                             try? await Task.sleep(nanoseconds: 900_000_000)
                             isWindingFilm = false
                         }
+                        .onScrollPhaseChange { _, newPhase in
+                            feedScrolling = (newPhase != .idle)
+                        }
+                        .environment(\.isFeedScrolling, feedScrolling)
                     }
                 }
             }
@@ -147,7 +192,11 @@ struct HomeView: View {
         }
         .task {
             await NotificationScheduler.requestPermission()
-            // Sample-only mode — no Firestore listener.
+            if let uid = auth.uid {
+                albumService.startListening(userId: uid)
+                activityService.startListening(uid: uid)
+                notifService.startListening(uid: uid)
+            }
             if !hasSeenFeedCoach {
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 withAnimation { showFeedCoach = true }
@@ -185,9 +234,12 @@ struct HomeView: View {
                     .environment(auth)
             }
         }
+        .fullScreenCover(item: $slideshowAlbum) { album in
+            RollSlideshowView(album: album, shots: displayShots(for: album))
+        }
     }
 
-    private var unreadCount: Int { SampleData.notifications.count }
+    private var unreadCount: Int { notifService.unreadCount }
 
     private var windingFilmStrip: some View {
         HStack(spacing: 10) {
@@ -206,7 +258,7 @@ struct HomeView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 4) {
             Text("AFTERIMAGE")
                 .font(.custom("Bebas Neue", size: 22)).tracking(6)
                 .foregroundStyle(Palette.gold)
@@ -215,28 +267,34 @@ struct HomeView: View {
             Button { showNotifications = true } label: {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: "bell.fill")
-                        .font(.system(size: 17))
+                        .font(.system(size: 20))
                         .foregroundStyle(Palette.textPrimary)
                     if unreadCount > 0 {
-                        Circle().fill(Palette.red).frame(width: 8, height: 8)
+                        Circle().fill(Palette.red).frame(width: 9, height: 9)
                             .overlay(Circle().stroke(Palette.background, lineWidth: 1.5))
-                            .offset(x: 4, y: -2)
+                            .offset(x: 5, y: -3)
                     }
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
             }
             Button { showJoin = true } label: {
                 Image(systemName: "qrcode.viewfinder")
-                    .font(.system(size: 18))
+                    .font(.system(size: 22))
                     .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Button { showCreate = true } label: {
                 Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 22))
+                    .font(.system(size: 27))
                     .foregroundStyle(Palette.gold)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private var emptyState: some View {
@@ -336,26 +394,62 @@ struct AlbumRow: View {
     let index: Int
     let onTapMembers: () -> Void
     let onPreviewSunrise: () -> Void
+    /// Negative horizontal padding used to break the card out of a surrounding
+    /// inset so the film strip runs edge-to-edge. The feed's plain `VStack`
+    /// honors this overflow (default `-16`). A `LazyVStack` (profile) clips the
+    /// overflow, so the profile gives the card full width another way and passes
+    /// `0` here. See `ProfileView.rollCard`.
+    var sideBreakout: CGFloat = -16
 
     var body: some View {
-        if album.isRevealed {
-            RevealedRollCard(album: album, index: index, onTapMembers: onTapMembers)
-        } else {
-            DevelopingFilmStripCard(
-                album: album, now: now,
-                onTapMembers: onTapMembers,
-                onPreviewSunrise: onPreviewSunrise
-            )
+        Group {
+            if album.isRevealed {
+                RevealedRollCard(album: album, index: index, onTapMembers: onTapMembers)
+            } else {
+                DevelopingFilmStripCard(
+                    album: album, now: now,
+                    onTapMembers: onTapMembers,
+                    onPreviewSunrise: onPreviewSunrise
+                )
+            }
         }
+        // Break the post card out of the surrounding side inset so the film
+        // strip runs edge-to-edge with the screen. Header/footer keep their own
+        // internal padding, so text never touches the edge.
+        .padding(.horizontal, sideBreakout)
     }
 }
 
 // MARK: - DEVELOPING: film strip with red safe-light glow + live ticker
 
+// Publishes a developing card's vertical centre (global space) so the sealed
+// frames can brighten/dim as the card travels through the viewport — a slow
+// "safe-light sweeping the negatives" shade that responds to scroll.
+private struct DevelopingGlowKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 struct DevelopingFilmStripCard: View {
     let album: Album
     let now: Date
     let onTapMembers: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 0…1 darkroom-glow level driven by the card's position on screen. Peaks
+    /// when the card is centred, falls off toward the top/bottom edges, so the
+    /// sealed frames gently glow brighter then dimmer as you scroll past them.
+    @State private var scrollGlow: Double = 0.35
+    /// Photo URLs loaded directly from the roll's shots when the album's
+    /// denormalized `previewURLs` list is empty (see AlbumService.fetchShotURLs).
+    @State private var fallbackURLs: [String] = []
+
+    /// The album's sealed shots. Shown under heavy blur + darkroom red so you
+    /// can *barely* make a shape out — the roll isn't developed yet, so this
+    /// never reveals an actual photo, just a distorted impression of one.
+    private var sealedShotURLs: [String] {
+        album.stripPreviewURLs.isEmpty ? fallbackURLs : album.stripPreviewURLs
+    }
     let onPreviewSunrise: () -> Void
 
     private var interval: TimeInterval { max(0, album.revealAt.timeIntervalSince(now)) }
@@ -367,18 +461,17 @@ struct DevelopingFilmStripCard: View {
         if hours > 0 { return "\(hours)h \(minutes)m until sunrise" }
         return "\(minutes)m until sunrise"
     }
-    /// Pseudo-live shot count that moves a little over time.
-    private var fakeShotCount: Int {
-        let id = album.id ?? album.name
-        return abs(id.hashValue) % 22 + 2
-    }
-    /// Presence ticker — rotates every 30s with the parent ticker.
+    /// Real number of shots sealed into this roll so far.
+    private var shotCount: Int { max(album.displayShotCount, fallbackURLs.count) }
+    /// Honest developing status line. No fabricated presence — just where the
+    /// roll is being shot (if known) or how many frames are sealed so far.
     private var ticker: String {
-        let names = ["noah", "sam", "maya", "leo", "riley", "kim", "jake"]
-        let id = album.id ?? album.name
-        let n = abs(id.hashValue &+ Int(now.timeIntervalSince1970 / 30))
-        let name = names[n % names.count]
-        return "\(name) just used shot \(fakeShotCount)"
+        if let loc = album.mapLocationName {
+            return "shooting in \(loc.uppercased())"
+        }
+        if shotCount == 0 { return "no shots yet — be the first" }
+        if shotCount == 1 { return "1 shot sealed in the dark" }
+        return "\(shotCount) shots sealed in the dark"
     }
     /// Stable first frame number derived from the album id so the labels
     /// don't shift across renders.
@@ -386,6 +479,12 @@ struct DevelopingFilmStripCard: View {
         2 + abs((album.id ?? album.name).hashValue) % 16
     }
     private var startFrameBottom: Int { startFrameTop + 6 }
+
+    /// Stable per-card seed for the scroll sheen, derived from the album id so
+    /// each post shimmers differently but consistently within a session.
+    private var sheenSeed: Double {
+        Double(abs((album.id ?? album.name).hashValue) % 997)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -400,9 +499,34 @@ struct DevelopingFilmStripCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Palette.border.opacity(0.7), lineWidth: 1)
         )
+        // Report position so the sealed frames can shade with scroll. Frames stay
+        // put (no horizontal pan) — only their glow brightness tracks the scroll.
+        .background(
+            GeometryReader { g in
+                Color.clear.preference(
+                    key: DevelopingGlowKey.self,
+                    value: g.frame(in: .global).midY
+                )
+            }
+        )
+        .onPreferenceChange(DevelopingGlowKey.self) { midY in
+            // Hold a steady mid-glow when motion is reduced.
+            guard !reduceMotion else { scrollGlow = 0.5; return }
+            let screenH = UIScreen.main.bounds.height
+            // 0 when the card sits at the bottom of the screen → 1 as it rides
+            // to the top. Scrolling DOWN lifts the card up, so this rises with
+            // scroll: the negative barely brightens the further down you scroll.
+            scrollGlow = min(max(1 - midY / screenH, 0), 1)
+        }
+        // If the album has no denormalized preview list, load the shot URLs
+        // directly so the sealed frames still render.
+        .task(id: album.id) {
+            guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
+            fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
+        }
     }
 
-    // MARK: Header — title + shot count + stock/soundtrack pills
+    // MARK: Header — title + shot count
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -414,65 +538,69 @@ struct DevelopingFilmStripCard: View {
                     .minimumScaleFactor(0.5)
                     .warmthFlicker()
                 Spacer(minLength: 8)
-                Text("\(fakeShotCount) / 24 SHOTS")
+                Text("\(shotCount) / 24 SHOTS")
                     .font(.custom("Menlo", size: 13)).tracking(2)
                     .foregroundStyle(Palette.gold)
-            }
-            HStack(spacing: 8) {
-                if let stock = album.filmStock {
-                    StockPill(stock: stock)
-                }
-                if let track = album.soundtrack {
-                    SoundtrackPill(soundtrack: track)
-                }
-                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, 18).padding(.top, 20).padding(.bottom, 14)
     }
 
-    // MARK: Strip section — sprocket → frame numbers → photos → frame numbers → sprocket
+    // MARK: Strip section — the whole strip (sprockets, edge numbers, sealed
+    // frames) pans as one piece of film, exactly like a developed roll. The
+    // sealed red negative is supplied per-cell; `FilmStripSection` drives the pan.
 
     private var stripSection: some View {
-        VStack(spacing: 0) {
-            LivingSprocketStrip(height: 8, holeHeight: 4)
-            FrameNumberTrack(
-                prefix: album.filmStock?.shortCode ?? "AFTERIMAGE",
-                startFrame: startFrameTop
-            )
-            filmFrames
-            FrameNumberTrack(
-                prefix: "→ \(album.name.uppercased())",
-                startFrame: startFrameBottom
-            )
-            LivingSprocketStrip(height: 8, holeHeight: 4)
+        FilmStripSection(
+            photoURLs: sealedShotURLs,
+            startFrameTop: startFrameTop,
+            startFrameBottom: startFrameBottom,
+            sheenSeed: sheenSeed
+        ) { url in
+            sealedFrame(url: url)
         }
-        .background(Color.black)
     }
 
-    private var filmFrames: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<5, id: \.self) { _ in
-                ZStack {
-                    RadialGradient(
-                        colors: [
-                            Color(red: 0.32, green: 0.07, blue: 0.05),
-                            Color(red: 0.10, green: 0.02, blue: 0.02)
-                        ],
-                        center: .center, startRadius: 4, endRadius: 90
-                    )
-                    Circle()
-                        .fill(Palette.darkRed.opacity(0.45))
-                        .frame(width: 50, height: 50)
-                        .blur(radius: 14)
-                }
+    /// A single undeveloped negative, rendered in pure black-and-red: the real
+    /// sealed shot stripped to greyscale, tinted red, and heavily blurred so you
+    /// can *barely* make out a shape. As the card travels UP the screen (i.e. as
+    /// you scroll down the feed) `scrollGlow` rises and the frame appears to
+    /// "surface from the developer": the blur softens, the image lifts out of the
+    /// dark, and the red safe-light loosens its grip — but it never fully resolves,
+    /// always staying greyscale-into-red.
+    @ViewBuilder
+    private func sealedFrame(url: URL?) -> some View {
+        // Eased reveal so the emergence feels organic rather than linear.
+        let reveal = scrollGlow * scrollGlow * (3 - 2 * scrollGlow)   // smoothstep
+        ZStack {
+            Color.black
+            if let url {
+                // Strip ALL colour to greyscale, then multiply by red so the
+                // only hues in the sealed frame are black → red.
+                FilmFrameImage(url: url)
+                    .saturation(0)                                       // greyscale
+                    .blur(radius: 11 - reveal * 7)                       // 11 sealed → 4 as it surfaces
+                    .brightness(-0.34 + reveal * 0.30)                  // lifts out of the dark
+                    .contrast(1.0 + reveal * 0.25)                      // shape firms up
+                    .opacity(0.85 + reveal * 0.15)
+                    .colorMultiply(Color(red: 0.80, green: 0.05, blue: 0.04))   // tint the grey image red
             }
+            // Darkroom safe-light falloff — pure red so nothing but black/red
+            // ever shows. Eases back as the frame surfaces so more is visible.
+            RadialGradient(
+                colors: [
+                    Color(red: 0.34, green: 0.0, blue: 0.0).opacity(0.30 - reveal * 0.14),
+                    Color(red: 0.09, green: 0.0, blue: 0.0).opacity(0.60 - reveal * 0.22)
+                ],
+                center: .center, startRadius: 6, endRadius: 110
+            )
+            .blendMode(.multiply)
+            // Soft red bloom — the developing-glow signature, swelling as it surfaces.
+            Circle()
+                .fill(Color(red: 0.55, green: 0.0, blue: 0.0).opacity(0.16 + reveal * 0.12))
+                .frame(width: 56, height: 56)
+                .blur(radius: 16)
         }
-        // Frame height tuned to match the target's frame aspect on iPhone.
-        // ~70pt wide × 160pt tall ≈ 0.44 portrait — closer to the target's
-        // moderate portrait rather than the extreme 1:3 we had at 200pt.
-        .frame(height: 160)
-        .background(Color.black)
     }
 
     // MARK: Footer — DEVELOPING + countdown + ticker + members
@@ -515,8 +643,8 @@ struct DevelopingFilmStripCard: View {
 // Mirrors DevelopingFilmStripCard exactly in structure: header → sprocket strip
 // → 5 horizontal film frames → sprocket strip → footer. The only differences:
 //
-//   • The film frames show the actual revealed photos (with the album's film
-//     stock grade applied), instead of the red darkroom glow.
+//   • The film frames show the actual revealed photos, instead of the red
+//     darkroom glow.
 //   • The footer reads DEVELOPED + date instead of DEVELOPING + countdown.
 //   • The middle "ticker" line shows the location (mirrors the live ticker
 //     rhythm of the developing card).
@@ -531,16 +659,14 @@ struct RevealedRollCard: View {
     let index: Int
     let onTapMembers: () -> Void
 
+    /// Photo URLs loaded directly from the roll's shots when the album's
+    /// denormalized `previewURLs` list is empty (see AlbumService.fetchShotURLs).
+    @State private var fallbackURLs: [String] = []
+
     private var allShotURLs: [String] {
-        guard let id = album.id else { return [] }
-        let shots = album.isSample
-            ? SampleData.shots(forAlbumId: id)
-            : SampleData.demoShots(forAlbumId: id, count: 9)
-        return shots.map { $0.photoURL }
+        album.stripPreviewURLs.isEmpty ? fallbackURLs : album.stripPreviewURLs
     }
-    /// The 5 photos that go in the film-strip frames.
-    private var stripShots: [String] { Array(allShotURLs.prefix(5)) }
-    private var totalShots: Int { allShotURLs.count }
+    private var totalShots: Int { max(album.displayShotCount, fallbackURLs.count) }
 
     private var dateStamp: String {
         let f = DateFormatter()
@@ -552,6 +678,12 @@ struct RevealedRollCard: View {
         2 + abs((album.id ?? album.name).hashValue) % 16
     }
     private var startFrameBottom: Int { startFrameTop + 6 }
+
+    /// Stable per-card seed for the scroll sheen, derived from the album id so
+    /// each post shimmers differently but consistently within a session.
+    private var sheenSeed: Double {
+        Double(abs((album.id ?? album.name).hashValue) % 997)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -566,6 +698,12 @@ struct RevealedRollCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Palette.border.opacity(0.7), lineWidth: 1)
         )
+        // If the album has no denormalized preview list (older rolls), load the
+        // shot URLs directly so the developed frames still render.
+        .task(id: album.id) {
+            guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
+            fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
+        }
     }
 
     // MARK: Header — title + total shots + pills
@@ -584,70 +722,33 @@ struct RevealedRollCard: View {
                     .font(.custom("Menlo", size: 13)).tracking(2)
                     .foregroundStyle(Palette.gold)
             }
-            HStack(spacing: 8) {
-                if let stock = album.filmStock {
-                    StockPill(stock: stock)
-                }
-                if let track = album.soundtrack {
-                    SoundtrackPill(soundtrack: track)
-                }
-                Spacer(minLength: 0)
-            }
         }
         .padding(.horizontal, 18).padding(.top, 20).padding(.bottom, 14)
     }
 
-    // MARK: Strip section — sprocket → frame numbers → photos → frame numbers → sprocket
+    // MARK: Strip section — the whole strip (sprockets, edge numbers, photos)
+    // pans as one piece of film. See `FilmStripSection`.
 
     private var stripSection: some View {
-        VStack(spacing: 0) {
-            LivingSprocketStrip(height: 8, holeHeight: 4)
-            FrameNumberTrack(
-                prefix: album.filmStock?.shortCode ?? "AFTERIMAGE",
-                startFrame: startFrameTop
-            )
-            filmFrames
-            FrameNumberTrack(
-                prefix: "→ \(album.name.uppercased())",
-                startFrame: startFrameBottom
-            )
-            LivingSprocketStrip(height: 8, holeHeight: 4)
-        }
-        .background(Color.black)
-    }
-
-    /// 5 portrait film frames showing actual photos with the album's film
-    /// stock grade applied. Landscape photos rotate sideways via
-    /// `FilmFrameImage` so every cell stays full.
-    ///
-    /// Height matches the developing card so developed + developing posts
-    /// have identical strip geometry.
-    private var filmFrames: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<5, id: \.self) { i in
-                frameCell(at: i)
+        FilmStripSection(
+            photoURLs: allShotURLs,
+            startFrameTop: startFrameTop,
+            startFrameBottom: startFrameBottom,
+            sheenSeed: sheenSeed
+        ) { url in
+            if let url {
+                FilmFrameImage(url: url)
+            } else {
+                ZStack {
+                    RadialGradient(
+                        colors: [Color(white: 0.10), Color(white: 0.04)],
+                        center: .center, startRadius: 4, endRadius: 90
+                    )
+                    Image(systemName: "circle.dotted")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white.opacity(0.10))
+                }
             }
-        }
-        .frame(height: 160)
-        .background(Color.black)
-    }
-
-    @ViewBuilder
-    private func frameCell(at i: Int) -> some View {
-        if i < stripShots.count, let url = URL(string: stripShots[i]) {
-            FilmFrameImage(url: url, stockGrade: album.filmStock)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ZStack {
-                RadialGradient(
-                    colors: [Color(white: 0.10), Color(white: 0.04)],
-                    center: .center, startRadius: 4, endRadius: 90
-                )
-                Image(systemName: "circle.dotted")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.white.opacity(0.10))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -686,7 +787,7 @@ struct RevealedRollCard: View {
     }
 
     private var tickerText: String {
-        if let loc = SampleData.location(forAlbumId: album.id ?? "") {
+        if let loc = album.mapLocationName {
             return "shot in \(loc.uppercased())"
         }
         return "roll \(String(format: "%02d", index + 1)) · \(totalShots) shots"
@@ -698,33 +799,46 @@ struct RevealedRollCard: View {
 struct AlbumMemberAvatar: View {
     let uid: String
     var size: CGFloat = 20
+    @Environment(UserService.self) private var users
 
     var body: some View {
         Group {
-            if uid == "me" {
+            if uid == users.currentProfile?.id {
                 ZStack {
                     Circle().fill(Palette.gold.opacity(0.25))
                     Image(systemName: "person.fill")
                         .font(.system(size: size * 0.45))
                         .foregroundStyle(Palette.gold)
                 }
-            } else if let seed = SampleData.avatarSeed(forMemberId: uid) {
-                AsyncImage(url: URL(string: "https://picsum.photos/seed/\(seed)/120/120")) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Palette.surface
-                    }
-                }
-                .clipShape(Circle())
             } else {
-                ZStack {
-                    Circle().fill(Palette.surface)
-                    Text(uid.prefix(1).uppercased())
-                        .font(.system(size: size * 0.45, weight: .bold))
-                        .foregroundStyle(Palette.textTertiary)
-                }
+                realAvatar
             }
         }
         .frame(width: size, height: size)
+    }
+
+    @ViewBuilder
+    private var realAvatar: some View {
+        let profile = users.profile(for: uid)
+        if let urlStr = profile?.photoURL, let url = URL(string: urlStr) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img): img.resizable().scaledToFill()
+                default: Palette.surface
+                }
+            }
+            .clipShape(Circle())
+        } else {
+            monogram(profile?.initials ?? "?")
+        }
+    }
+
+    private func monogram(_ text: String) -> some View {
+        ZStack {
+            Circle().fill(Palette.surface)
+            Text(text.uppercased())
+                .font(.system(size: size * 0.45, weight: .bold))
+                .foregroundStyle(Palette.textTertiary)
+        }
     }
 }

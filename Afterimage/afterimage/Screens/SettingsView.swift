@@ -111,7 +111,7 @@ struct SettingsView: View {
         .background(
             Capsule().fill(Palette.surface.opacity(0.75))
                 .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 1))
-                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 6)
+                .warmShadow(radius: 18, y: 6, opacity: 0.35)
         )
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -123,7 +123,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 6) {
                 Circle().fill(Palette.gold).frame(width: 5, height: 5)
-                Text(auth.email ?? "DEMO MODE")
+                Text(auth.email ?? "SIGNED OUT")
                     .font(.custom("Menlo", size: 10)).tracking(2)
                     .foregroundStyle(Palette.gold)
                     .lineLimit(1)

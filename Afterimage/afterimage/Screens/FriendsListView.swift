@@ -10,9 +10,38 @@ import SwiftUI
 
 struct FriendsListView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var pending = SampleData.friendRequests
-    @State private var presentedFriend: SampleData.SampleFriend?
+    @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
+    @State private var friendService = FriendService()
+    @State private var presentedPerson: PersonRef?
     @State private var showAddFriend = false
+
+    private struct Req: Identifiable {
+        let id: String
+        let handle: String
+        let displayName: String
+        let subtitle: String
+        let onAccept: () -> Void
+        let onDecline: () -> Void
+    }
+
+    /// Accepted friends as neutral refs.
+    private var friends: [PersonRef] {
+        let ids = users.currentProfile?.friendIds ?? []
+        return ids.compactMap { users.profile(for: $0)?.asPersonRef }
+    }
+
+    /// Pending incoming requests as neutral rows.
+    private var pending: [Req] {
+        friendService.incoming.map { req in
+            let p = users.profile(for: req.fromUid)
+            return Req(id: req.id ?? UUID().uuidString,
+                       handle: p?.handle ?? "@someone", displayName: p?.displayName ?? "Someone",
+                       subtitle: "wants to connect",
+                       onAccept: { Task { try? await friendService.accept(req) } },
+                       onDecline: { Task { try? await friendService.decline(req) } })
+        }
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -33,7 +62,35 @@ struct FriendsListView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     heroBlock
                         .padding(.horizontal, 22)
-                        .padding(.bottom, 36)
+                        .padding(.bottom, 18)
+
+                    Button {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        showAddFriend = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "person.badge.plus.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                            Text("ADD A FRIEND")
+                                .font(.custom("Bebas Neue", size: 20)).tracking(3)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold)).opacity(0.7)
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 18).padding(.vertical, 16)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Palette.gold)
+                        )
+                        .warmShadow(radius: 12, y: 5, opacity: 0.4)
+                    }
+                    .buttonStyle(.plain)
+                    .pressEffect()
+                    .accessibilityLabel("Add a friend")
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 30)
                     if !pending.isEmpty {
                         requestsPlate
                             .padding(.horizontal, 18)
@@ -54,8 +111,13 @@ struct FriendsListView: View {
                 Spacer()
             }
         }
-        .sheet(item: $presentedFriend) { friend in
-            OtherProfileView(friend: friend)
+        .task {
+            if let uid = auth.uid {
+                friendService.startListening(uid: uid)
+            }
+        }
+        .sheet(item: $presentedPerson) { person in
+            OtherProfileView(person: person)
         }
         .sheet(isPresented: $showAddFriend) {
             AddFriendSheet()
@@ -91,35 +153,37 @@ struct FriendsListView: View {
                 Text("NETWORK")
                     .font(.custom("Bebas Neue", size: 12)).tracking(3)
                     .foregroundStyle(Palette.gold)
-                Text("·  \(SampleData.friends.count)")
+                Text("·  \(friends.count)")
                     .font(.custom("Menlo", size: 10)).tracking(1)
                     .foregroundStyle(Palette.textTertiary)
             }
             Spacer()
 
-            // Add friend — button-in-button gold pill
+            // Add friend — prominent labeled gold pill
             Button {
                 UISelectionFeedbackGenerator().selectionChanged()
                 showAddFriend = true
             } label: {
-                ZStack {
-                    Circle().fill(Palette.gold)
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.black)
+                HStack(spacing: 6) {
+                    Image(systemName: "person.badge.plus.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("ADD")
+                        .font(.custom("Bebas Neue", size: 15)).tracking(2)
                 }
-                .frame(width: 32, height: 32)
-                .warmShadow(radius: 4, y: 2, opacity: 0.4)
+                .foregroundStyle(.black)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(Capsule().fill(Palette.gold))
+                .warmShadow(radius: 6, y: 2, opacity: 0.45)
             }
             .buttonStyle(.plain)
-            .pressEffect(scale: 0.92, lift: 1)
+            .pressEffect(scale: 0.94, lift: 1)
             .accessibilityLabel("Add a friend")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(
             Capsule().fill(Palette.surface.opacity(0.75))
                 .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 1))
-                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 6)
+                .warmShadow(radius: 18, y: 6, opacity: 0.35)
         )
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -162,9 +226,9 @@ struct FriendsListView: View {
 
     private var eyebrowText: String {
         if pending.isEmpty {
-            return "\(SampleData.friends.count) IN YOUR NETWORK"
+            return "\(friends.count) IN YOUR NETWORK"
         }
-        return "\(pending.count) WAITING · \(SampleData.friends.count) IN YOUR NETWORK"
+        return "\(pending.count) WAITING · \(friends.count) IN YOUR NETWORK"
     }
 
     // MARK: - Requests plate — Double-Bezel with gold glow
@@ -227,23 +291,21 @@ struct FriendsListView: View {
         .warmShadow(radius: 12, y: 6, opacity: 0.4)
     }
 
-    private func requestRow(_ r: SampleData.FriendRequest) -> some View {
+    private func requestRow(_ r: Req) -> some View {
         HStack(spacing: 12) {
             AvatarCircle(label: r.displayName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(r.username)
+                Text(r.handle)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Palette.gold)
-                Text(r.mutualNote)
+                Text(r.subtitle)
                     .font(.custom("Times New Roman", size: 11)).italic()
                     .foregroundStyle(Palette.textTertiary)
             }
             Spacer()
             Button {
                 UISelectionFeedbackGenerator().selectionChanged()
-                withAnimation(Motion.crisp) {
-                    pending.removeAll { $0.id == r.id }
-                }
+                withAnimation(Motion.crisp) { r.onAccept() }
             } label: {
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .bold))
@@ -253,12 +315,10 @@ struct FriendsListView: View {
             }
             .buttonStyle(.plain)
             .pressEffect()
-            .accessibilityLabel("Accept friend request from \(r.username)")
+            .accessibilityLabel("Accept friend request from \(r.handle)")
 
             Button {
-                withAnimation(Motion.crisp) {
-                    pending.removeAll { $0.id == r.id }
-                }
+                withAnimation(Motion.crisp) { r.onDecline() }
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .bold))
@@ -268,7 +328,7 @@ struct FriendsListView: View {
             }
             .buttonStyle(.plain)
             .pressEffect()
-            .accessibilityLabel("Decline friend request from \(r.username)")
+            .accessibilityLabel("Decline friend request from \(r.handle)")
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
     }
@@ -282,7 +342,7 @@ struct FriendsListView: View {
                 Text("YOUR NETWORK")
                     .font(.custom("Bebas Neue", size: 12)).tracking(3)
                     .foregroundStyle(Palette.textSecondary)
-                Text("·  \(SampleData.friends.count)")
+                Text("·  \(friends.count)")
                     .font(.custom("Menlo", size: 10)).tracking(1)
                     .foregroundStyle(Palette.textTertiary)
                 Spacer()
@@ -290,21 +350,27 @@ struct FriendsListView: View {
             .padding(.horizontal, 14).padding(.vertical, 12)
             Rectangle().fill(Palette.border.opacity(0.5)).frame(height: 1)
 
+            if friends.isEmpty {
+                Text("no friends yet — add some above.")
+                    .font(.custom("Times New Roman", size: 12)).italic()
+                    .foregroundStyle(Palette.textTertiary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 22)
+            }
             VStack(spacing: 0) {
-                ForEach(Array(SampleData.friends.enumerated()), id: \.element.id) { idx, f in
+                ForEach(Array(friends.enumerated()), id: \.element.id) { idx, f in
                     ScrollFadeIn(delay: Double(idx) * 0.04 + 0.05, distance: 10) {
                         Button {
                             UISelectionFeedbackGenerator().selectionChanged()
-                            presentedFriend = f
+                            presentedPerson = f
                         } label: {
                             friendRow(f)
                         }
                         .buttonStyle(.plain)
                         .pressEffect(scale: 0.985)
-                        .accessibilityLabel("\(f.displayName), \(f.username)")
+                        .accessibilityLabel("\(f.displayName), \(f.handle)")
                         .accessibilityHint("Opens \(f.displayName)'s profile")
                     }
-                    if idx < SampleData.friends.count - 1 {
+                    if idx < friends.count - 1 {
                         Rectangle().fill(Palette.border.opacity(0.4))
                             .frame(height: 1)
                             .padding(.horizontal, 14)
@@ -331,9 +397,9 @@ struct FriendsListView: View {
         )
     }
 
-    private func friendRow(_ f: SampleData.SampleFriend) -> some View {
+    private func friendRow(_ f: PersonRef) -> some View {
         HStack(spacing: 12) {
-            AsyncImage(url: URL(string: "https://picsum.photos/seed/\(f.photoSeed)/120/120")) { phase in
+            AsyncImage(url: friendAvatarURL(f)) { phase in
                 switch phase {
                 case .success(let img):
                     img.resizable().scaledToFill()
@@ -351,14 +417,15 @@ struct FriendsListView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
                 HStack(spacing: 6) {
-                    Text(f.username)
+                    Text(f.handle)
                         .font(.custom("Menlo", size: 10)).tracking(0.5)
                         .foregroundStyle(Palette.gold)
-                    Text("·")
-                        .foregroundStyle(Palette.textTertiary)
-                    Text("\(f.mutualAlbums) mutual roll\(f.mutualAlbums == 1 ? "" : "s")")
-                        .font(.custom("Times New Roman", size: 10)).italic()
-                        .foregroundStyle(Palette.textTertiary)
+                    if let mutual = f.mutualAlbums {
+                        Text("·").foregroundStyle(Palette.textTertiary)
+                        Text("\(mutual) mutual roll\(mutual == 1 ? "" : "s")")
+                            .font(.custom("Times New Roman", size: 10)).italic()
+                            .foregroundStyle(Palette.textTertiary)
+                    }
                 }
             }
             Spacer()
@@ -375,10 +442,16 @@ struct FriendsListView: View {
 
     // MARK: - Footer
 
+    private func friendAvatarURL(_ f: PersonRef) -> URL? {
+        if let urlStr = f.photoURL, !urlStr.isEmpty { return URL(string: urlStr) }
+        if let seed = f.photoSeed { return URL(string: "https://picsum.photos/seed/\(seed)/120/120") }
+        return nil
+    }
+
     private var footerLine: some View {
         HStack(spacing: 8) {
             Rectangle().fill(Palette.border).frame(height: 1)
-            Text("\(SampleData.friends.count) FRIENDS · \(pending.count) WAITING")
+            Text("\(friends.count) FRIENDS · \(pending.count) WAITING")
                 .font(.custom("Menlo", size: 9)).tracking(2.5)
                 .foregroundStyle(Palette.textTertiary)
             Rectangle().fill(Palette.border).frame(height: 1)

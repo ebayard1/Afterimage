@@ -220,6 +220,7 @@ private struct CommentBlockRow: View {
     let onLike: (Comment) -> Void
 
     @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -262,16 +263,16 @@ private struct CommentBlockRow: View {
 
     @ViewBuilder
     private var avatar: some View {
-        let seed = SampleData.friend(byUsername: comment.username)?.photoSeed
+        let profile = users.profile(for: comment.userId)
         ZStack {
-            if let seed {
-                AsyncImage(url: URL(string: "https://picsum.photos/seed/\(seed)/120/120")) { phase in
+            if let urlStr = profile?.photoURL, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: Palette.surface
                     }
                 }
-            } else if comment.userId == "me" {
+            } else if comment.userId == auth.uid {
                 Circle().fill(Palette.gold.opacity(0.25))
                 Image(systemName: "person.fill").foregroundStyle(Palette.gold).font(.system(size: 12))
             } else {

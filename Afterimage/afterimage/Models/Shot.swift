@@ -9,6 +9,11 @@ struct Shot: Identifiable, Codable, Hashable {
     var note: String?
     /// emoji -> array of user IDs that reacted with it
     var reactions: [String: [String]]?
+    /// Where this shot was taken (captured at the first shot of a roll). The
+    /// Cloud Function copies the first located shot's place onto the album.
+    var latitude: Double?
+    var longitude: Double?
+    var locationName: String?
 
     func reactionCount(_ emoji: String) -> Int {
         reactions?[emoji]?.count ?? 0

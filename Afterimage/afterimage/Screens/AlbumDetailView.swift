@@ -4,6 +4,7 @@ import Combine
 struct AlbumDetailView: View {
     let album: Album
     @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
     @Environment(ToastCenter.self) private var toast
     @Environment(\.dismiss) private var dismiss
     @State private var shotService = ShotService()
@@ -16,28 +17,9 @@ struct AlbumDetailView: View {
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    /// Shots to display — sample for sample albums (merging canned + session captures),
-    /// live for real albums. Real albums with zero shots fall back to demo shots.
-    private var displayShots: [Shot] {
-        if album.isSample {
-            let canned = SampleData.shots(forAlbumId: album.id ?? "")
-            let session = SampleSessionShots.shared.shots(forAlbumId: album.id ?? "")
-            return canned + session
-        }
-        if shotService.shots.isEmpty, let id = album.id {
-            return SampleData.demoShots(forAlbumId: id)
-        }
-        return shotService.shots
-    }
-    private var isShowingDemoFallback: Bool {
-        !album.isSample && shotService.shots.isEmpty
-    }
-    private var myDisplayShotCount: Int {
-        if album.isSample {
-            return displayShots.filter { $0.userId == "me" }.count
-        }
-        return shotService.myShotCount
-    }
+    /// The roll's live shots.
+    private var displayShots: [Shot] { shotService.shots }
+    private var myDisplayShotCount: Int { shotService.myShotCount }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -77,12 +59,12 @@ struct AlbumDetailView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onReceive(ticker) { now = $0 }
         .task {
-            if !album.isSample, let uid = auth.uid, let albumId = album.id {
+            if let uid = auth.uid, let albumId = album.id {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraView(album: album)
+            CameraView(album: album, showsCloseButton: true)
                 .environment(auth)
                 .environment(toast)
         }
@@ -155,7 +137,7 @@ struct AlbumDetailView: View {
             // Glass plate — Double-Bezel outer shell + inner highlight
             Capsule().fill(Palette.surface.opacity(0.75))
                 .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 1))
-                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 6)
+                .warmShadow(radius: 18, y: 6, opacity: 0.35)
         )
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -226,7 +208,7 @@ struct AlbumDetailView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.textSecondary)
 
-            if !album.isSample && myDisplayShotCount == 0 {
+            if myDisplayShotCount == 0 {
                 VStack(spacing: 6) {
                     HStack(spacing: 3) {
                         ForEach(0..<12, id: \.self) { _ in
@@ -276,12 +258,6 @@ struct AlbumDetailView: View {
             // Leave room for the floating header island + 24pt breath
             Color.clear.frame(height: 76)
 
-            if isShowingDemoFallback {
-                demoFallbackBanner
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 28)
-            }
-
             if displayShots.isEmpty {
                 emptyShotsState
                     .padding(.horizontal, 24)
@@ -296,7 +272,6 @@ struct AlbumDetailView: View {
                         .padding(.bottom, 36)
                     BentoPhotoGrid(
                         shots: displayShots,
-                        filmStock: album.filmStock,
                         onTapShot: { idx in selectedShotIndex = idx }
                     )
                     .padding(.horizontal, 18)
@@ -350,14 +325,8 @@ struct AlbumDetailView: View {
 
     private var taglineText: String {
         var parts: [String] = []
-        if let loc = SampleData.location(forAlbumId: album.id ?? "") {
+        if let loc = album.mapLocationName {
             parts.append("shot in \(loc.lowercased())")
-        }
-        if let stock = album.filmStock {
-            parts.append("on \(stock.displayName.lowercased())")
-        }
-        if let track = album.soundtrack {
-            parts.append("\u{201C}\(track.title)\u{201D} by \(track.artist)")
         }
         return parts.isEmpty
             ? "\(displayShots.count) shots, sealed until sunrise."
@@ -366,7 +335,7 @@ struct AlbumDetailView: View {
 
     // MARK: - Stats bento
     //
-    // Three Double-Bezel cards in a row: shot count · contributors · film stock.
+    // Two Double-Bezel cards in a row: shot count · contributors.
 
     private var statsBento: some View {
         HStack(spacing: 8) {
@@ -382,30 +351,13 @@ struct AlbumDetailView: View {
                 sub: contributorNamesString,
                 tint: Palette.textPrimary
             )
-            if let stock = album.filmStock {
-                statCard(
-                    eyebrow: "STOCK",
-                    value: stock.shortCode,
-                    sub: stock.tagline,
-                    tint: stock.accent,
-                    valueFont: .custom("Bebas Neue", size: 17)
-                )
-            } else {
-                statCard(
-                    eyebrow: "GRADE",
-                    value: "NATIVE",
-                    sub: "no stock applied",
-                    tint: Palette.textTertiary,
-                    valueFont: .custom("Bebas Neue", size: 17)
-                )
-            }
         }
     }
 
     private var contributorNamesString: String {
         let names = album.memberIds.compactMap { uid -> String? in
-            if uid == "me" { return "you" }
-            return SampleData.friend(forMemberId: uid)?.username
+            if uid == users.currentProfile?.id { return "you" }
+            return users.profile(for: uid)?.handle
         }
         let firstTwo = names.prefix(2).joined(separator: ", ")
         let extra = max(0, names.count - 2)
@@ -502,23 +454,7 @@ struct AlbumDetailView: View {
         )
     }
 
-    // MARK: - Empty + demo banners (rebuilt with more breath)
-
-    private var demoFallbackBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sparkles").font(.system(size: 11))
-                .foregroundStyle(Palette.gold)
-            Text("sample preview · your real shots will replace these")
-                .font(.custom("Times New Roman", size: 11)).italic()
-                .foregroundStyle(Palette.textSecondary)
-            Spacer()
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(
-            Capsule().fill(Palette.gold.opacity(0.10))
-                .overlay(Capsule().stroke(Palette.gold.opacity(0.35), lineWidth: 1))
-        )
-    }
+    // MARK: - Empty state
 
     private var emptyShotsState: some View {
         VStack(spacing: 14) {

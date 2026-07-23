@@ -7,6 +7,7 @@ struct CommentsSection: View {
     let onJumpToShot: (Int) -> Void
 
     @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
     @Environment(ToastCenter.self) private var toast
     @State private var service = CommentService()
     @State private var draft: String = ""
@@ -137,12 +138,9 @@ struct CommentsSection: View {
 
     private func submit() {
         guard canPost, let albumId = album.id else { return }
-        let myUsername: String = {
-            if let email = auth.email, let p = email.split(separator: "@").first {
-                return "@\(p)"
-            }
-            return "@you"
-        }()
+        // Always post under your real saved profile handle — never the login
+        // email's local-part (that's what was surfacing the wrong name).
+        let myUsername = users.currentProfile?.handle ?? "@you"
         let text = draft
         let ref = draftRefShotId
         draft = ""
@@ -157,6 +155,9 @@ struct CommentsSection: View {
                     userId: auth.uid ?? "me",
                     username: myUsername
                 )
+                // The `onCommentCreated` Cloud Function fans this out to everyone
+                // in the roll (activity feed + push).
+                toast.show("comment sent to everyone in \(album.name)")
             } catch {
                 toast.error("couldn't post")
             }
@@ -172,6 +173,9 @@ private struct CommentRow: View {
     let referencedShotIndex: Int?
     var isHighlighted: Bool = false
     let onTapReference: (Int) -> Void
+
+    @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
 
     var body: some View {
         let body = HStack(alignment: .top, spacing: 12) {
@@ -227,16 +231,16 @@ private struct CommentRow: View {
 
     @ViewBuilder
     private var avatar: some View {
-        let seed = SampleData.friend(byUsername: comment.username)?.photoSeed
+        let profile = users.profile(for: comment.userId)
         ZStack {
-            if let seed {
-                AsyncImage(url: URL(string: "https://picsum.photos/seed/\(seed)/80/80")) { phase in
+            if let urlStr = profile?.photoURL, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: Palette.surface
                     }
                 }
-            } else if comment.userId == "me" {
+            } else if comment.userId == auth.uid {
                 Circle().fill(Palette.gold.opacity(0.25))
                 Image(systemName: "person.fill").foregroundStyle(Palette.gold).font(.system(size: 11))
             } else {

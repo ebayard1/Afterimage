@@ -65,7 +65,7 @@ struct SunriseRevealView: View {
                         Capsule()
                             .fill(stage == 3 ? Palette.gold : Palette.darkRed)
                             .frame(width: geo.size.width * progress)
-                            .animation(.easeInOut(duration: 0.6), value: progress)
+                            .animation(Motion.expressive, value: progress)
                     }
                 }
                 .frame(height: 4)

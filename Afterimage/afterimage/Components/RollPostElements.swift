@@ -5,11 +5,33 @@ import SwiftUI
 // The three building blocks for the canonical Afterimage post format:
 //   1. FrameNumberTrack — Menlo orange "STOCK  6 ▶  7A ▶  8 ▶..." strip that
 //      runs along the top and bottom of the film strip section
-//   2. StockPill — deep-wine red pill with a camera glyph + stock name
-//   3. SoundtrackPill — dark pill with note glyph + soundtrack title
 //
 // Used by both DevelopingFilmStripCard and RevealedRollCard so the two states
 // of a roll share the exact same chrome.
+
+// MARK: - Canonical film-strip geometry
+//
+// Every roll post — developing (red darkroom glow) and developed (real photos)
+// — renders its film strip with these exact metrics so the proportions are
+// identical across the whole feed, on every device width. Frame size is driven
+// by a fixed ASPECT RATIO (not a fixed height) so the strip looks the same on
+// an iPhone SE as on a Pro Max — matched to the reference screenshot.
+enum FilmStripMetrics {
+    /// Number of frames shown per strip. 4 wide frames (per the redesign) — the
+    /// frames are flex, so fewer frames simply widen to fill the row.
+    static let frameCount = 4
+    /// Gap between frames. Set to 0 so the photos sit flush against each other
+    /// with no black rebate between them (per user request — fill the row).
+    static let frameSpacing: CGFloat = 0
+    /// Width ÷ height of a single frame. 0.54 ≈ a tall portrait negative —
+    /// taller than a 2:3/3:4 photo so each frame reads as a tall photo.
+    static let frameAspect: CGFloat = 0.54
+    /// Width ÷ height of the whole frame row (the 5 frames side by side).
+    /// Used to give the row a fixed box so the panning reel knows its height.
+    /// The thin 2pt rebates between frames are negligible at feed widths, so
+    /// `frameCount * frameAspect` matches the per-frame layout to within ~3pt.
+    static var rowAspect: CGFloat { CGFloat(frameCount) * frameAspect }
+}
 
 // MARK: Kodak-orange used by the frame-number track.
 
@@ -17,6 +39,113 @@ extension Color {
     /// The exact orange used for 35mm film edge-print labels. Kodak/Fujifilm
     /// both use a slightly muted, warm orange — never bright safety-cone.
     static let kodakEdge = Color(red: 0.83, green: 0.42, blue: 0.10)
+}
+
+// MARK: - Candle-flicker edge print
+//
+// The edge-print label rows read like the film base lit from behind by a warm,
+// living flame: the numbers (and barcodes) breathe between a dim ember orange
+// and a brighter warm amber, with a soft glow that jitters the way a candle
+// does. Crucially they NEVER wash to white and NEVER hard-reset — the intensity
+// is a sum of incommensurate sines (plus a slow breath), so it wanders
+// organically and never snaps back to a start value the way the old sliding
+// gradient did.
+//
+// The warm fill is painted as an overlay masked to the row's glyphs/bars, so
+// the whole row flickers as one piece of backlit film. Top and bottom edges get
+// different `seed` phase offsets so they don't flicker in lockstep.
+//
+// The flame is SCROLL-DRIVEN: it only ticks while the enclosing feed is
+// actively scrolling (via the `isFeedScrolling` environment flag published by
+// the feeds' `.onScrollPhaseChange`) and freezes mid-flicker the moment the
+// feed comes to rest — like the light steadying when the film stops moving.
+//
+// Under `accessibilityReduceMotion` the flame freezes to a steady mid-amber
+// glow — no flicker, no pulse.
+
+private struct CandleFlicker: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isFeedScrolling) private var isScrolling
+    /// Phase offset (seconds) so separate rows flicker independently.
+    var seed: Double = 0
+
+    func body(content: Content) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0,
+                                paused: reduceMotion || !isScrolling)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate + seed
+            let flame = reduceMotion ? 0.5 : Self.candle(t)
+
+            // Ember orange (flame 0) → warm amber (flame 1). The brightest point
+            // is a warm amber, never cream/white — max green 0.70, blue 0.28.
+            let warm = Color(
+                red:   0.83 + flame * 0.17,   // 0.83 → 1.00
+                green: 0.42 + flame * 0.28,   // 0.42 → 0.70
+                blue:  0.10 + flame * 0.18    // 0.10 → 0.28
+            )
+            let glowRadius = 2 + flame * 7.0            // 2 → 9pt bloom
+            let glowOpacity = 0.20 + flame * 0.40       // 0.20 → 0.60
+
+            content
+                // Repaint every glyph/bar with the current flame colour.
+                .overlay { warm.mask(content) }
+                // Warm bloom that flickers with the flame.
+                .shadow(color: Color(red: 1.0, green: 0.72, blue: 0.36).opacity(glowOpacity),
+                        radius: glowRadius)
+        }
+    }
+
+    /// 0…1 candle-flame intensity. Layered sines at incommensurate frequencies
+    /// give a fast organic jitter; the slow term is the flame "breathing." The
+    /// frequencies share no common period, so the curve never visibly repeats
+    /// or resets.
+    static func candle(_ t: Double) -> Double {
+        let jitterFast = 0.18 * sin(t * 11.0)
+        let jitterMid  = 0.13 * sin(t * 17.3 + 1.3)
+        let jitterHigh = 0.09 * sin(t * 23.9 + 4.1)
+        let breath     = 0.10 * sin(t * 3.1)
+        let raw = 0.5 + jitterFast + jitterMid + jitterHigh + breath
+        return min(1.0, max(0.0, raw))
+    }
+}
+
+extension View {
+    /// Applies the backlit candle flicker to a film-strip edge-print row so all
+    /// its numbers and barcodes breathe together. See `CandleFlicker`.
+    func candleFlicker(seed: Double = 0) -> some View { modifier(CandleFlicker(seed: seed)) }
+}
+
+// MARK: - Film edge barcode
+//
+// A short run of thin vertical bars of varying width — the DX / frame barcode
+// that Kodak prints along the edge of a 35mm negative next to the frame
+// numbers. Deterministic from a seed so a given frame's barcode is stable and
+// pans/loops with the film. Rendered in the same edge-print orange and painted
+// over by `candleFlicker`, so it breathes with the numbers beside it.
+
+struct FilmBarcode: View {
+    /// Bar widths, precomputed from the seed so `ForEach` stays stable.
+    private let widths: [CGFloat]
+    var height: CGFloat = 11
+
+    init(seed: Int, bars: Int = 16, height: CGFloat = 11) {
+        var rng = SimpleSplitMix(seed: seed)
+        self.widths = (0..<bars).map { _ in
+            let r = rng.next01()
+            return r < 0.55 ? 1.0 : (r < 0.85 ? 2.0 : 3.0)
+        }
+        self.height = height
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 1.5) {
+            ForEach(Array(widths.enumerated()), id: \.offset) { _, w in
+                Rectangle()
+                    .fill(Color.kodakEdge)
+                    .frame(width: w, height: height)
+            }
+        }
+        .accessibilityHidden(true)
+    }
 }
 
 // MARK: FrameNumberTrack
@@ -63,88 +192,6 @@ struct FrameNumberTrack: View {
     }
 }
 
-// MARK: StockPill
-
-/// Deep-wine red pill that surfaces the album's film stock. Camera glyph on
-/// the left, stock short code in Menlo. Reads like a stamp.
-///
-/// All text is locked to one line + `fixedSize` so the pill never gets
-/// squeezed into a multi-line vertical stack when sharing a row with other
-/// pills — that's what was producing the broken "CINESTIL\nL 800T" wrap.
-struct StockPill: View {
-    let stock: FilmStock
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(stockTint.opacity(0.55))
-                    .frame(width: 20, height: 14)
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(stockTint)
-            }
-            Text(stock.shortCode)
-                .font(.custom("Menlo", size: 10)).tracking(1.5)
-                .foregroundStyle(stockTint)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(
-            Capsule().fill(stockBackground)
-                .overlay(Capsule().stroke(stockBorder, lineWidth: 1))
-        )
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Film stock: \(stock.displayName)")
-    }
-
-    /// Pink/coral foreground color, derived from Palette.red but lightened so
-    /// it sits comfortably on the deep-wine background.
-    private var stockTint: Color {
-        Color(red: 0.95, green: 0.62, blue: 0.62)
-    }
-
-    private var stockBackground: Color {
-        // Deeper than Palette.darkRed so the pill reads as its own object.
-        Color(red: 0.22, green: 0.05, blue: 0.07)
-    }
-
-    private var stockBorder: Color {
-        Color(red: 0.45, green: 0.13, blue: 0.16)
-    }
-}
-
-// MARK: SoundtrackPill
-
-/// Dark pill with a music note + soundtrack title in Menlo. Lower visual
-/// weight than StockPill — it's contextual flavor, not identity.
-struct SoundtrackPill: View {
-    let soundtrack: Soundtrack
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "music.note")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Palette.textSecondary)
-            Text(soundtrack.title.uppercased())
-                .font(.custom("Menlo", size: 10)).tracking(1.5)
-                .foregroundStyle(Palette.textSecondary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(
-            Capsule().fill(Palette.background.opacity(0.6))
-                .overlay(Capsule().stroke(Palette.border, lineWidth: 1))
-        )
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Soundtrack: \(soundtrack.title) by \(soundtrack.artist)")
-    }
-}
-
 // MARK: - Bottom row member avatars (small, right-aligned)
 //
 // Used in both card variants. Up to N visible avatars + an overflow count.
@@ -170,5 +217,207 @@ struct RollMembersRow: View {
             }
         }
         .accessibilityLabel("\(memberIds.count) contributors")
+    }
+}
+
+// MARK: - FilmStripSection
+//
+// The entire developed-roll film strip — top sprockets, top edge numbers, the
+// photo frames, bottom edge numbers, bottom sprockets — panning as ONE piece of
+// film. Everything is driven by a single shared `advance` (measured in frames),
+// so the perforations, the printed frame numbers, and the photos all travel
+// left together at exactly the same speed.
+//
+// `advance` is driven purely by a single monotonic clock (`idleDrift` frames per
+// second), so the film only ever inches forward — it never tracks scroll
+// position, which used to make the strip lurch backward (and read as a "hard
+// reset") when the feed rubber-banded or scrolled up. The `scrollSheen` glare
+// keeps its own independent scroll read and is left exactly as-is.
+//
+// The edge numbers are rendered as per-frame cells aligned to the photo columns,
+// so each frame's number rides directly above/below its photo. Both sprocket
+// rows (and the dark "punched holes" overlay that sits on top of the glare) take
+// the same pixel offset, keeping the whole strip locked together.
+//
+// Under `accessibilityReduceMotion` the shared clock is paused and the strip
+// sits still on the first frames — the classic static contact-sheet look.
+//
+// The per-frame look is supplied by the caller via `frameContent`, so a
+// developed roll renders real photos while a developing roll renders its sealed
+// red negative — both panning through the exact same film mechanism.
+struct FilmStripSection<Cell: View>: View {
+    /// Every photo in the roll, in order. The strip cycles through all of them.
+    let photoURLs: [String]
+    /// Leading frame number printed on the top / bottom edge tracks.
+    let startFrameTop: Int
+    let startFrameBottom: Int
+    /// Per-card seed for the (unchanged) specular glare.
+    let sheenSeed: Double
+
+    /// Constant pan speed in frames/second. ~0.12 ≈ one new frame every ~8s — a
+    /// slow, continuous creep that loops seamlessly.
+    var idleDrift: Double = 0.12
+
+    /// Renders a single film cell for the resolved photo URL of that slot
+    /// (`nil` when the roll has no photos yet). Developed rolls return the real
+    /// `FilmFrameImage`; developing rolls return their blurred red negative.
+    @ViewBuilder var frameContent: (URL?) -> Cell
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var frameCount: Int { FilmStripMetrics.frameCount }
+    private var spacing: CGFloat { FilmStripMetrics.frameSpacing }
+
+    var body: some View {
+        // The card is always full-bleed (screen width) in both the feed and the
+        // profile, so the strip width is simply the screen width. We deliberately
+        // do NOT measure it: a self-referential GeometryReader used to fall back
+        // to a narrower value on a fresh / lazily-recycled cell and sometimes
+        // stick there, exposing the card surface as side margins. Any tiny
+        // overshoot is clipped by the card's rounded-rect mask, so the strip can
+        // only ever fill — never under-fill and leave a margin.
+        let measuredW = UIScreen.main.bounds.width
+        let frameW = (measuredW - spacing * CGFloat(frameCount - 1)) / CGFloat(frameCount)
+        let step = frameW + spacing
+        let frameH = frameW / FilmStripMetrics.frameAspect
+
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            // Monotonic, scroll-independent advance — never moves backward, so the
+            // loop wraps seamlessly with no perceived hard reset.
+            let advance = reduceMotion ? 0 : t * idleDrift
+            let base = Int(advance.rounded(.down))
+            let frac = CGFloat(advance - Double(base))
+            let slide = -frac * step                  // sub-frame pixel slide
+            let pannedPixels = CGFloat(advance) * step // continuous travel for sprockets
+
+            // Edge numbers ride the OUTSIDE of the strip; the sprocket holes sit
+            // INSIDE, between the numbers and the photos — matching a real
+            // negative where the perforations hug the frames and the printed
+            // edge codes run along the very edge of the film.
+            VStack(spacing: 0) {
+                numberBand(start: startFrameTop, base: base, frameW: frameW, slide: slide, width: measuredW, edgePhase: 0)
+                LivingSprocketStrip(externalOffset: pannedPixels)
+                frameBand(base: base, frameW: frameW, frameH: frameH, slide: slide, width: measuredW)
+                LivingSprocketStrip(externalOffset: pannedPixels)
+                numberBand(start: startFrameBottom, base: base, frameW: frameW, slide: slide, width: measuredW, edgePhase: 1)
+            }
+            .background(Color.black)
+            // Glare sweeps the full height of the strip — unchanged.
+            .scrollSheen(seed: sheenSeed)
+            // Re-punch the holes on top of the sheen so they stay dark, using
+            // the SAME pan offset so they line up with the holes underneath. The
+            // clear spacers mirror the number bands (fixed) and photo band
+            // (flexible) so the two re-punch rows land exactly on the sprockets.
+            .overlay {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: numberBandHeight)
+                    LivingSprocketStrip(bandBackground: .clear, externalOffset: pannedPixels)
+                    Color.clear.frame(maxHeight: .infinity)
+                    LivingSprocketStrip(bandBackground: .clear, externalOffset: pannedPixels)
+                    Color.clear.frame(height: numberBandHeight)
+                }
+            }
+        }
+    }
+
+    // MARK: Photo frames
+
+    private func frameBand(base: Int, frameW: CGFloat, frameH: CGFloat, slide: CGFloat, width: CGFloat) -> some View {
+        let n = max(photoURLs.count, 1)
+        return HStack(spacing: spacing) {
+            // One extra frame so a new photo is always waiting to slide in from
+            // the right as the strip translates left.
+            ForEach(0...(frameCount + 1), id: \.self) { slot in
+                frameCell(globalIndex: base + slot, n: n)
+                    .frame(width: frameW, height: frameH)
+                    .clipped()
+            }
+        }
+        .frame(height: frameH)
+        .offset(x: slide)
+        // Pin to the strip width and clip. The row of fixed-width cells is wider
+        // than the card, so this MUST be a concrete width — `maxWidth:.infinity`
+        // lets the oversized intrinsic width leak up and stretch the whole card
+        // past the screen edges.
+        .frame(width: width, alignment: .leading)
+        .background(Color.black)
+        .clipped()
+    }
+
+    @ViewBuilder
+    private func frameCell(globalIndex: Int, n: Int) -> some View {
+        let url: URL? = photoURLs.isEmpty
+            ? nil
+            : URL(string: photoURLs[(globalIndex % n + n) % n])
+        frameContent(url)
+    }
+
+    // MARK: Edge numbers — one cell per frame column, so a number rides with
+    // each photo at exactly the same speed. Some cells also carry a DX-style
+    // barcode next to the number, exactly as a real negative's edge print does.
+
+    /// Fixed height of an edge-print band. Kept constant (rather than intrinsic)
+    /// so the re-punch overlay can mirror it with a clear spacer of equal height
+    /// and keep the sprocket holes aligned.
+    private var numberBandHeight: CGFloat { 22 }
+
+    private func numberBand(start: Int, base: Int, frameW: CGFloat, slide: CGFloat, width: CGFloat, edgePhase: Int) -> some View {
+        let n = max(photoURLs.count, 1)
+        return HStack(spacing: spacing) {
+            ForEach(0...(frameCount + 1), id: \.self) { slot in
+                let globalIndex = base + slot
+                let k = (globalIndex % n + n) % n
+                numberCell(globalIndex: globalIndex, start: start, k: k, frameW: frameW, edgePhase: edgePhase)
+            }
+        }
+        .offset(x: slide)
+        // Warm candle flicker across the whole edge-print row (numbers + bars),
+        // applied before the black band so it masks to the glyphs/bars. Top and
+        // bottom edges get different phase offsets so they don't flicker as one.
+        .candleFlicker(seed: Double(edgePhase) * 2.7)
+        // Concrete width (not maxWidth:.infinity) so the oversized cell row
+        // can't stretch the card past the screen — see frameBand.
+        .frame(width: width, height: numberBandHeight, alignment: .leading)
+        .background(Color.black)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func numberCell(globalIndex: Int, start: Int, k: Int, frameW: CGFloat, edgePhase: Int) -> some View {
+        // Top edge (phase 0) prints its barcode along the TOP of the band and
+        // the bottom edge (phase 1) along the BOTTOM — both barcodes touch the
+        // OUTER edge of the film strip, like real edge print at the film's rim.
+        let outerAlignment: Alignment = edgePhase == 0 ? .top : .bottom
+        HStack(spacing: 7) {
+            Text(numberLabel(start: start, k: k))
+                .font(.custom("Menlo", size: 10)).tracking(1.5)
+                .foregroundStyle(Color.kodakEdge)
+                .lineLimit(1)
+            if showsBarcode(globalIndex: globalIndex, edgePhase: edgePhase) {
+                FilmBarcode(seed: globalIndex &* 2_654_435_761)
+                    .frame(maxHeight: .infinity, alignment: outerAlignment)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: frameW, height: numberBandHeight, alignment: .leading)
+    }
+
+    /// Whether this frame column prints a barcode beside its number. Every third
+    /// frame carries one — with `frameCount` (4) columns visible at a time, a
+    /// window of that width always contains exactly one or two multiples of
+    /// three, so each edge shows a steady 1–2 barcodes in frame, never zero and
+    /// never a cluster. The bottom edge is offset by one column so its barcodes
+    /// are STAGGERED against the top edge's instead of stacking.
+    private func showsBarcode(globalIndex: Int, edgePhase: Int) -> Bool {
+        (((globalIndex + edgePhase) % 3) + 3) % 3 == 0
+    }
+
+    /// Kodak-style alternating frame numbering: N, (N+1)A, N+2, (N+3)A …
+    /// Wraps with the album length so the numbers loop together with the photos.
+    private func numberLabel(start: Int, k: Int) -> String {
+        let num = start + k
+        return (k % 2 == 1) ? "\(num)A ▶" : "\(num) ▶"
     }
 }

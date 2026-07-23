@@ -35,7 +35,7 @@ struct InviteDeepLinkView: View {
                     Divider().background(Palette.border)
                     row("members so far", "\(members.count)")
                     Divider().background(Palette.border)
-                    row("visibility", "🔒 private")
+                    row("visibility", "private")
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)
                 .background(Palette.surface)

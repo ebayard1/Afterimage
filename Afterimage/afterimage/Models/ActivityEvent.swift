@@ -15,7 +15,8 @@ struct ActivityEvent: Identifiable, Hashable {
     let id = UUID()
     let kind: Kind
     let actorUsername: String  // e.g. "@sam_k"
-    let actorPhotoSeed: String // picsum seed for avatar
+    let actorPhotoSeed: String // picsum seed for avatar (sample mode)
+    var actorPhotoURL: String? = nil // real avatar URL (real mode)
     let albumName: String?     // optional context album
     let detail: String?        // free-form trailing detail
     let happenedAt: Date       // for the relative timestamp

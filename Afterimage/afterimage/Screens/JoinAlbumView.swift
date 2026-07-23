@@ -110,17 +110,33 @@ struct JoinAlbumView: View {
     }
 
     private func join(code: String) {
-        // Sample-only mode — no Firestore write.
         let trimmed = code.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         isLoading = true
         errorMessage = nil
         Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            toast.success("demo: would join roll")
-            isLoading = false
-            dismiss()
+            guard let uid = auth.uid else {
+                errorMessage = "you must be signed in to join"
+                isLoading = false
+                return
+            }
+            do {
+                guard let albumId = try await albumService.resolveInvite(code: trimmed) else {
+                    errorMessage = "no roll found for that code"
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    isLoading = false
+                    return
+                }
+                try await albumService.join(albumId: albumId, userId: uid)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                toast.success("joined the roll")
+                isLoading = false
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                isLoading = false
+            }
         }
     }
 }

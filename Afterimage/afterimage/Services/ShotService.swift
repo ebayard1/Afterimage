@@ -34,7 +34,15 @@ final class ShotService {
         myShotCount = 0
     }
 
-    func upload(image: UIImage, albumId: String, userId: String, note: String?) async throws {
+    func upload(
+        image: UIImage,
+        albumId: String,
+        userId: String,
+        note: String?,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        locationName: String? = nil
+    ) async throws {
         guard let data = image.jpegData(compressionQuality: 0.85) else {
             throw NSError(
                 domain: "ShotService", code: 1,
@@ -47,9 +55,18 @@ final class ShotService {
         let ref = storage.reference(withPath: path)
         let metadata = StorageMetadata()
         metadata.contentType = "image/jpeg"
-        _ = try await ref.putDataAsync(data, metadata: metadata)
-        let downloadURL = try await ref.downloadURL()
-        let urlString = downloadURL.absoluteString
+        // Tag which stage failed so the camera can show a precise message
+        // instead of a generic "upload failed".
+        let urlString: String
+        do {
+            _ = try await ref.putDataAsync(data, metadata: metadata)
+            let downloadURL = try await ref.downloadURL()
+            urlString = downloadURL.absoluteString
+        } catch {
+            throw NSError(domain: "ShotService", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "storage upload failed: \(error.localizedDescription)"
+            ])
+        }
 
         let cleanedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
         let shot = Shot(
@@ -58,18 +75,23 @@ final class ShotService {
             photoURL: urlString,
             createdAt: Date(),
             note: (cleanedNote?.isEmpty ?? true) ? nil : cleanedNote,
-            reactions: nil
+            reactions: nil,
+            latitude: latitude,
+            longitude: longitude,
+            locationName: locationName
         )
-        try db.collection("albums").document(albumId)
-            .collection("shots").document(shotId)
-            .setData(from: shot)
-
-        // First shot becomes the album cover (best-effort, ignore errors)
-        let albumRef = db.collection("albums").document(albumId)
-        if let snap = try? await albumRef.getDocument(),
-           let existing = snap.data()?["coverPhotoURL"] as? String,
-           !existing.isEmpty { /* cover already set */ } else {
-            try? await albumRef.updateData(["coverPhotoURL": urlString])
+        // Write ONLY the shot. The `onShotCreated` Cloud Function owns the
+        // album's denormalized fields (previewURLs, shotCount, coverPhotoURL)
+        // and copies the first located shot's place onto the album — keeping
+        // those writes server-side so the security rules can stay strict.
+        do {
+            try await db.collection("albums").document(albumId)
+                .collection("shots").document(shotId)
+                .setData(from: shot)
+        } catch {
+            throw NSError(domain: "ShotService", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "saving shot failed: \(error.localizedDescription)"
+            ])
         }
     }
 

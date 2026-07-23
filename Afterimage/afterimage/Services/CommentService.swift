@@ -12,12 +12,6 @@ final class CommentService {
 
     func startListening(albumId: String) {
         currentAlbumId = albumId
-        // Sample albums: just load the canned comment thread.
-        if albumId.hasPrefix(SampleData.samplePrefix) {
-            comments = SampleData.comments(forAlbumId: albumId)
-            return
-        }
-        // Real albums: live Firestore listener on the comments subcollection.
         listener?.remove()
         listener = db.collection("albums").document(albumId).collection("comments")
             .order(by: "createdAt")
@@ -54,32 +48,12 @@ final class CommentService {
             parentId: parentId,
             likedBy: nil
         )
-        // Sample albums: append to the in-memory thread.
-        if albumId.hasPrefix(SampleData.samplePrefix) {
-            comments.append(comment)
-            return
-        }
         try db.collection("albums").document(albumId)
             .collection("comments").document(comment.id ?? UUID().uuidString)
             .setData(from: comment)
     }
 
     func toggleLike(commentId: String, albumId: String, userId: String) async throws {
-        if albumId.hasPrefix(SampleData.samplePrefix) {
-            // In-memory toggle for sample albums.
-            if let idx = comments.firstIndex(where: { $0.id == commentId }) {
-                var c = comments[idx]
-                var likes = c.likedBy ?? []
-                if let i = likes.firstIndex(of: userId) {
-                    likes.remove(at: i)
-                } else {
-                    likes.append(userId)
-                }
-                c.likedBy = likes.isEmpty ? nil : likes
-                comments[idx] = c
-            }
-            return
-        }
         let ref = db.collection("albums").document(albumId)
             .collection("comments").document(commentId)
         let snap = try await ref.getDocument()

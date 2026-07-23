@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Horizontal "newsstand ticker" of friend activity that sits between the
-/// Rolls feed header and the developing section. Sample-only; reads from
-/// SampleData.activityEvents.
+/// Rolls feed header and the developing section. Driven by the live activity
+/// feed passed in as `events`.
 struct ActivityRail: View {
     let events: [ActivityEvent]
     var onTapEvent: (ActivityEvent) -> Void = { _ in }
@@ -40,10 +40,16 @@ struct ActivityRail: View {
         .padding(.horizontal, 16)
     }
 
+    /// Prefer a real avatar URL; fall back to the picsum seed for sample mode.
+    private func avatarURL(_ ev: ActivityEvent) -> URL? {
+        if let urlStr = ev.actorPhotoURL, !urlStr.isEmpty { return URL(string: urlStr) }
+        return URL(string: "https://picsum.photos/seed/\(ev.actorPhotoSeed)/80/80")
+    }
+
     private func chip(_ ev: ActivityEvent) -> some View {
         Button { onTapEvent(ev) } label: {
             HStack(spacing: 9) {
-                AsyncImage(url: URL(string: "https://picsum.photos/seed/\(ev.actorPhotoSeed)/80/80")) { phase in
+                AsyncImage(url: avatarURL(ev)) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: ShimmerPlaceholder()

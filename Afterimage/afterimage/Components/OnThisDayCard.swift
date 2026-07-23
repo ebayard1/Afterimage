@@ -1,9 +1,16 @@
 import SwiftUI
 
+/// A revealed roll from a previous year on today's calendar day.
+struct OnThisDayMemory {
+    let yearsAgo: Int
+    let album: Album
+    let teaserPhotoURL: String?
+}
+
 /// "1 YEAR AGO TODAY" surfacing card. Sits between the activity rail and the
 /// rolls list when there's a memory worth recalling. Tap to open the album.
 struct OnThisDayCard: View {
-    let memory: SampleData.OnThisDay
+    let memory: OnThisDayMemory
     var onTap: () -> Void = {}
 
     var body: some View {
@@ -19,7 +26,7 @@ struct OnThisDayCard: View {
                         .foregroundStyle(Palette.textPrimary)
                         .lineLimit(1)
                     HStack(spacing: 6) {
-                        if let loc = SampleData.location(forAlbumId: memory.album.id ?? "") {
+                        if let loc = memory.album.mapLocationName {
                             Image(systemName: "mappin").font(.system(size: 9))
                                 .foregroundStyle(Palette.textTertiary)
                             Text(loc.uppercased())
@@ -73,7 +80,6 @@ struct OnThisDayCard: View {
             .frame(width: 64, height: 64)
             .clipped()
             .overlay(Rectangle().stroke(Palette.darkRed.opacity(0.5), lineWidth: 1))
-            .filmStockGrade(memory.album.filmStock)
             .accessibilityHidden(true)
         } else {
             ZStack {

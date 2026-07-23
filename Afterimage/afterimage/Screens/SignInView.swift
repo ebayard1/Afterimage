@@ -231,8 +231,8 @@ struct SignInView: View {
             }
 
             inputField(
-                label: "name on the canister",
-                placeholder: "you@your.world",
+                label: "email",
+                placeholder: "you@email.com",
                 text: $email,
                 isSecure: false,
                 field: .email,
@@ -240,8 +240,8 @@ struct SignInView: View {
             )
 
             inputField(
-                label: "secret code",
-                placeholder: "at least six characters",
+                label: "password",
+                placeholder: "at least 6 characters",
                 text: $password,
                 isSecure: true,
                 field: .password,
@@ -371,23 +371,25 @@ struct SignInView: View {
                 errorMessage = nil
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(isSigningUp ? "if you've loaded a canister before," : "if this is your first roll,")
-                    .font(.custom("Times New Roman", size: 12)).italic()
-                    .foregroundStyle(Palette.textTertiary)
-                Text(isSigningUp ? "return" : "begin")
-                    .font(.custom("Bebas Neue", size: 12)).tracking(2)
+            HStack(spacing: 6) {
+                Text(isSigningUp ? "already have an account?" : "new to afterimage?")
+                    .font(.custom("Times New Roman", size: 13)).italic()
+                    .foregroundStyle(Palette.textSecondary)
+                Text(isSigningUp ? "SIGN IN" : "SIGN UP")
+                    .font(.custom("Bebas Neue", size: 14)).tracking(2)
                     .foregroundStyle(Palette.gold)
+                    .underline()
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Palette.gold)
             }
             .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pressEffect()
-        .accessibilityLabel(isSigningUp ? "I already have an account" : "I'm new here")
+        .accessibilityLabel(isSigningUp ? "Already have an account? Sign in" : "New here? Sign up")
     }
 
     // MARK: Footer epigraph — version + ritual signature

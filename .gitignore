@@ -1,0 +1,13 @@
+# Xcode build artifacts
+afterimage/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Firebase functions
+functions/node_modules/
+functions/lib/
+*.log
+
+# macOS
+.DS_Store

@@ -14,25 +14,28 @@ import Combine
 
 struct ProfileView: View {
     @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
     @State private var albumService = AlbumService()
-    @State private var showGallery = false
+    @State private var notifService = NotificationService()
+
+    private var friendCount: Int { users.currentProfile?.friendIds.count ?? 0 }
+
     @State private var showFriends = false
     @State private var showNotifications = false
     @State private var showSettings = false
-    @State private var showYearRecap = false
     @State private var membersSheetAlbum: Album?
     @State private var sunriseAlbum: Album?
-    @State private var presentedAlbum: Album?
+    @State private var detailAlbum: Album?
     @State private var now = Date()
-    @State private var showFaceTagReview = false
     @State private var showMap = false
-    @State private var searchQuery = ""
-    @FocusState private var searchFocused: Bool
+    @State private var showPhotoCapture = false
+    /// True while the archive is actively scrolling — drives the film-strip
+    /// glare fade (full while scrolling, subtle at rest). See `ScrollSheen`.
+    @State private var feedScrolling = false
 
     private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
-    /// Sample-only mode — never reads from Firestore.
-    private var allAlbums: [Album] { SampleData.albums }
+    private var allAlbums: [Album] { albumService.albums }
     private var developing: [Album] {
         allAlbums.filter { !$0.isRevealed }
             .sorted { $0.revealAt < $1.revealAt }
@@ -42,7 +45,7 @@ struct ProfileView: View {
             .sorted { $0.createdAt > $1.createdAt }
     }
     private var totalShotCount: Int {
-        SampleData.albums.reduce(0) { $0 + SampleData.shots(forAlbumId: $1.id ?? "").count }
+        allAlbums.reduce(0) { $0 + $1.displayShotCount }
     }
 
     var body: some View {
@@ -50,25 +53,25 @@ struct ProfileView: View {
             ZStack {
                 Palette.background.ignoresSafeArea()
                 ScrollView {
+                    // The card rows (rollCard) span the FULL width so their film
+                    // strips run edge-to-edge — the LazyVStack carries no side
+                    // inset (a lazy list clips the old negative-padding breakout).
+                    // Every NON-card sibling re-applies the 16pt ledger margin so
+                    // text and dividers keep their inset.
                     LazyVStack(alignment: .leading, spacing: 26, pinnedViews: []) {
                         identityHeader
+                            .padding(.horizontal, 16)
                         ledgerStrip
-                        yearInRollsCard
+                            .padding(.horizontal, 16)
 
                         if !developing.isEmpty {
                             ledgerDivider(title: "DEVELOPING", count: developing.count, color: Palette.red)
-                            VStack(spacing: 0) {
-                                ForEach(Array(developing.enumerated()), id: \.element.id) { idx, album in
-                                    ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
-                                        developingRow(album, rollNumber: developing.count - idx)
-                                    }
-                                    if idx < developing.count - 1 {
-                                        ledgerLine
-                                    }
+                                .padding(.horizontal, 16)
+                            ForEach(Array(developing.enumerated()), id: \.element.id) { idx, album in
+                                ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
+                                    rollCard(album, index: idx)
                                 }
                             }
-                            .background(Palette.surface.opacity(0.5))
-                            .overlay(Rectangle().stroke(Palette.border, lineWidth: 1))
                         }
 
                         HStack {
@@ -89,62 +92,30 @@ struct ProfileView: View {
                             .pressEffect()
                             .accessibilityLabel("Open map of roll locations")
                         }
-                        searchField
-                        let visible = visibleRevealed
-                        if visible.isEmpty {
-                            emptySearchState
-                        } else {
-                            VStack(spacing: 0) {
-                                ForEach(Array(visible.enumerated()), id: \.element.id) { idx, album in
-                                    ScrollFadeIn(delay: Double(idx) * 0.04 + 0.05, distance: 10) {
-                                        archiveRow(album, rollNumber: revealed.count - (revealed.firstIndex(where: { $0.id == album.id }) ?? idx))
-                                    }
-                                    if idx < visible.count - 1 {
-                                        ledgerLine
-                                    }
-                                }
+                        .padding(.horizontal, 16)
+                        ForEach(Array(revealed.enumerated()), id: \.element.id) { idx, album in
+                            ScrollFadeIn(delay: Double(idx) * 0.04 + 0.05, distance: 10) {
+                                rollCard(album, index: idx)
                             }
-                            .background(Palette.surface.opacity(0.5))
-                            .overlay(Rectangle().stroke(Palette.border, lineWidth: 1))
                         }
 
                         if !savedShots.isEmpty {
                             ledgerDivider(title: "SAVED", count: savedShots.count, color: Palette.gold)
+                                .padding(.horizontal, 16)
                             savedRail
+                                .padding(.horizontal, 16)
                         }
 
-                        if !SampleData.youAppearInShots.isEmpty {
-                            HStack {
-                                ledgerDivider(title: "YOU APPEAR IN",
-                                              count: SampleData.youAppearInShots.count,
-                                              color: Palette.textSecondary)
-                                Button { showFaceTagReview = true } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "tag.fill")
-                                            .font(.system(size: 9))
-                                        Text("REVIEW TAGS")
-                                            .font(.custom("Bebas Neue", size: 10)).tracking(2)
-                                    }
-                                    .foregroundStyle(Palette.gold)
-                                    .padding(.horizontal, 8).padding(.vertical, 4)
-                                    .background(Palette.gold.opacity(0.10))
-                                    .overlay(Capsule().stroke(Palette.gold.opacity(0.5), lineWidth: 1))
-                                    .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .pressEffect()
-                                .accessibilityLabel("Review face tags")
-                            }
-                            youAppearInRail
-                        }
-
-                        designGalleryCard
                         archiveFooter
                             .padding(.top, 8)
+                            .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 16)
                     .padding(.bottom, 32)
                 }
+                .onScrollPhaseChange { _, newPhase in
+                    feedScrolling = (newPhase != .idle)
+                }
+                .environment(\.isFeedScrolling, feedScrolling)
             }
             .navigationTitle("profile")
             .navigationBarTitleDisplayMode(.inline)
@@ -157,7 +128,7 @@ struct ProfileView: View {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "bell.fill")
                                 .foregroundStyle(Palette.textPrimary)
-                            if SampleData.notifications.count > 0 {
+                            if notifService.unreadCount > 0 {
                                 Circle().fill(Palette.red).frame(width: 8, height: 8)
                                     .overlay(Circle().stroke(Palette.background, lineWidth: 1.5))
                                     .offset(x: 5, y: -2)
@@ -176,8 +147,12 @@ struct ProfileView: View {
             }
         }
         .onReceive(ticker) { now = $0 }
-        // Sample-only mode — no Firestore listener.
-        .sheet(isPresented: $showGallery) { DesignGalleryView() }
+        .task {
+            if let uid = auth.uid {
+                albumService.startListening(userId: uid)
+                notifService.startListening(uid: uid)
+            }
+        }
         .sheet(isPresented: $showFriends) { FriendsListView() }
         .sheet(isPresented: $showNotifications) { NotificationsView() }
         .sheet(isPresented: $showSettings) {
@@ -190,20 +165,15 @@ struct ProfileView: View {
         .fullScreenCover(item: $sunriseAlbum) { album in
             SunriseRevealView(album: album)
         }
-        .fullScreenCover(isPresented: $showYearRecap) {
-            YearInRollsView()
-        }
-        .sheet(isPresented: $showFaceTagReview) {
-            FaceTagConfirmSheet()
-        }
         .fullScreenCover(isPresented: $showMap) {
             RollMapView()
         }
-        .navigationDestination(isPresented: Binding(
-            get: { presentedAlbum != nil },
-            set: { if !$0 { presentedAlbum = nil } }
-        )) {
-            if let album = presentedAlbum {
+        .fullScreenCover(isPresented: $showPhotoCapture) {
+            ProfilePhotoCaptureView()
+                .environment(auth)
+        }
+        .sheet(item: $detailAlbum) { album in
+            NavigationStack {
                 AlbumDetailView(album: album)
                     .environment(auth)
             }
@@ -217,7 +187,16 @@ struct ProfileView: View {
 
     private var identityHeader: some View {
         HStack(alignment: .top, spacing: 14) {
-            avatarFrame
+            Button {
+                UISelectionFeedbackGenerator().selectionChanged()
+                showPhotoCapture = true
+            } label: {
+                avatarFrame
+            }
+            .buttonStyle(.plain)
+            .pressEffect(scale: 0.95, lift: 1)
+            .accessibilityLabel("Change profile photo")
+            .accessibilityHint("Opens the camera to take a new profile photo")
             VStack(alignment: .leading, spacing: 6) {
                 Text(displayName)
                     .font(.custom("Bebas Neue", size: 24)).tracking(2)
@@ -231,7 +210,7 @@ struct ProfileView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "person.2.fill")
                             .font(.system(size: 9))
-                        Text("\(SampleData.friends.count) friends")
+                        Text("\(friendCount) friends")
                             .font(.system(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(Palette.gold)
@@ -242,7 +221,7 @@ struct ProfileView: View {
                 }
                 .buttonStyle(.plain)
                 .pressEffect()
-                .accessibilityLabel("\(SampleData.friends.count) friends — open list")
+                .accessibilityLabel("\(friendCount) friends — open list")
                 .padding(.top, 2)
 
                 if let email = auth.email, !email.isEmpty {
@@ -250,14 +229,6 @@ struct ProfileView: View {
                         .font(.custom("Menlo", size: 10)).tracking(0.5)
                         .foregroundStyle(Palette.textTertiary)
                         .padding(.top, 2)
-                } else {
-                    HStack(spacing: 5) {
-                        Circle().fill(Palette.gold).frame(width: 5, height: 5)
-                        Text("demo mode · sample data only")
-                            .font(.custom("Menlo", size: 10)).tracking(1)
-                            .foregroundStyle(Palette.textTertiary)
-                    }
-                    .padding(.top, 2)
                 }
             }
             Spacer()
@@ -269,15 +240,29 @@ struct ProfileView: View {
     /// Mirrors the way a single 35mm slide sits in a viewing mount.
     private var avatarFrame: some View {
         ZStack {
-            // Backing
-            Rectangle()
-                .fill(Palette.surface)
-                .frame(width: 72, height: 72)
-                .overlay(Rectangle().stroke(Palette.gold, lineWidth: 1.5))
-
-            Image(systemName: "person.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(Palette.gold.opacity(0.85))
+            // Backing — the saved profile photo, or the monogram fallback.
+            ZStack {
+                Rectangle().fill(Palette.surface)
+                if let urlStr = users.currentProfile?.photoURL,
+                   let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default:
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 36))
+                                .foregroundStyle(Palette.gold.opacity(0.85))
+                        }
+                    }
+                } else {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(Palette.gold.opacity(0.85))
+                }
+            }
+            .frame(width: 72, height: 72)
+            .clipped()
+            .overlay(Rectangle().stroke(Palette.gold, lineWidth: 1.5))
 
             // Corner ticks (top-left, top-right, bottom-left, bottom-right)
             ForEach(Array(corners.enumerated()), id: \.offset) { _, c in
@@ -290,9 +275,17 @@ struct ProfileView: View {
                 .rotationEffect(.degrees(c.rotation))
                 .offset(x: c.dx, y: c.dy)
             }
+
+            // Camera badge — signals the avatar is tappable to change the photo.
+            Image(systemName: "camera.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Palette.gold))
+                .overlay(Circle().stroke(Palette.background, lineWidth: 1.5))
+                .offset(x: 28, y: 28)
         }
         .frame(width: 80, height: 80)
-        .accessibilityHidden(true)
     }
 
     private var corners: [(dx: CGFloat, dy: CGFloat, rotation: Double)] {
@@ -305,6 +298,11 @@ struct ProfileView: View {
     }
 
     private var displayName: String {
+        // Prefer the real saved profile handle; only fall back to the email
+        // local-part if the profile hasn't loaded / doesn't exist yet.
+        if let handle = users.currentProfile?.username, !handle.isEmpty {
+            return "@\(handle)".uppercased()
+        }
         if let email = auth.email, let prefix = email.split(separator: "@").first {
             return "@\(prefix)".uppercased()
         }
@@ -312,6 +310,9 @@ struct ProfileView: View {
     }
 
     private var longName: String {
+        if let name = users.currentProfile?.displayName, !name.isEmpty {
+            return name
+        }
         if let email = auth.email, !email.isEmpty,
            let prefix = email.split(separator: "@").first {
             return String(prefix).capitalized
@@ -358,109 +359,29 @@ struct ProfileView: View {
         Rectangle().fill(Palette.border).frame(width: 1, height: 28)
     }
 
-    // MARK: - Year in rolls (compact)
+    // MARK: - Roll card — identical to the feed's film-strip post
 
-    private var yearInRollsCard: some View {
-        Button { showYearRecap = true } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    LinearGradient(
-                        colors: [Palette.gold.opacity(0.35), Palette.darkRed.opacity(0.25)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                    Image(systemName: "sunrise.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(Palette.gold)
-                }
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("YOUR YEAR IN ROLLS")
-                        .font(.custom("Bebas Neue", size: 14)).tracking(3)
-                        .foregroundStyle(Palette.gold)
-                    Text("every revealed roll · one cinematic recap")
-                        .font(.custom("Times New Roman", size: 12)).italic()
-                        .foregroundStyle(Palette.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "play.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.gold)
-                    .padding(8)
-                    .background(Palette.gold.opacity(0.15))
-                    .clipShape(Circle())
-            }
-            .padding(12)
-            .background(Palette.surface)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.gold.opacity(0.4), lineWidth: 1))
+    /// Renders a roll using the exact film-strip card from the feed (`AlbumRow`).
+    /// Tapping opens the album detail (the profile is the archive/ledger).
+    private func rollCard(_ album: Album, index: Int) -> some View {
+        Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            detailAlbum = album
+        } label: {
+            AlbumRow(
+                album: album, now: now, index: index,
+                onTapMembers: { membersSheetAlbum = album },
+                onPreviewSunrise: { sunriseAlbum = album },
+                // The profile's LazyVStack no longer insets the card rows, so the
+                // strip is already full-bleed — no negative breakout needed (it
+                // would overflow the screen in a lazy list).
+                sideBreakout: 0
+            )
         }
         .buttonStyle(.plain)
-        .pressEffect()
-        .accessibilityLabel("Play your year in rolls recap")
-    }
-
-    // MARK: - Search
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(searchFocused ? Palette.gold : Palette.textTertiary)
-                .font(.system(size: 12))
-            TextField("", text: $searchQuery,
-                      prompt: Text("search rolls, locations…")
-                .foregroundStyle(Palette.textTertiary))
-                .focused($searchFocused)
-                .foregroundStyle(Palette.textPrimary)
-                .font(.system(size: 13))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if !searchQuery.isEmpty {
-                Button { searchQuery = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(Palette.textTertiary)
-                        .font(.system(size: 13))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Palette.surface)
-        .overlay(Capsule().stroke(
-            searchFocused ? Palette.gold : Palette.border,
-            lineWidth: searchFocused ? 1.5 : 1))
-        .clipShape(Capsule())
-        .animation(Motion.tap, value: searchFocused)
-    }
-
-    private var visibleRevealed: [Album] {
-        let q = searchQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return revealed }
-        return revealed.filter { album in
-            if album.name.lowercased().contains(q) { return true }
-            if let loc = SampleData.location(forAlbumId: album.id ?? ""),
-               loc.lowercased().contains(q) { return true }
-            if let stock = album.filmStock,
-               stock.displayName.lowercased().contains(q) { return true }
-            if let track = album.soundtrack,
-               (track.title.lowercased().contains(q) || track.artist.lowercased().contains(q)) { return true }
-            return false
-        }
-    }
-
-    private var emptySearchState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 22))
-                .foregroundStyle(Palette.textTertiary)
-            Text("no rolls match \u{201C}\(searchQuery)\u{201D}")
-                .font(.system(size: 12)).italic()
-                .foregroundStyle(Palette.textTertiary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
-        .background(Palette.surface.opacity(0.3))
-        .overlay(Rectangle().stroke(Palette.border, style: StrokeStyle(lineWidth: 1, dash: [3])))
+        .accessibilityLabel("\(album.name), \(album.isRevealed ? "developed" : "developing") roll, \(album.memberIds.count) members")
+        .accessibilityHint("Double-tap to open. Long-press for more actions.")
+        .contextMenu { rollContextMenu(album: album) }
     }
 
     // MARK: - Ledger dividers + horizontal lines
@@ -479,243 +400,20 @@ struct ProfileView: View {
         .padding(.top, 4)
     }
 
-    private var ledgerLine: some View {
-        Rectangle().fill(Palette.border).frame(height: 1)
-            .padding(.horizontal, 10)
-    }
-
-    // MARK: - Developing row — red-tinted entry with countdown instead of hero
-
-    private func developingRow(_ album: Album, rollNumber: Int) -> some View {
-        Button {
-            UISelectionFeedbackGenerator().selectionChanged()
-            presentedAlbum = album
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                developingGlyph
-                VStack(alignment: .leading, spacing: 5) {
-                    rollHeaderLine(rollNumber: rollNumber, dateOrCountdown: countdownString(album), color: Palette.red)
-                    Text(album.name.uppercased())
-                        .font(.custom("Bebas Neue", size: 18)).tracking(2)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    HStack(spacing: 6) {
-                        if let loc = SampleData.location(forAlbumId: album.id ?? "") {
-                            Image(systemName: "mappin").font(.system(size: 8))
-                                .foregroundStyle(Palette.textTertiary)
-                            Text(loc.uppercased())
-                                .font(.custom("Bebas Neue", size: 10)).tracking(1.5)
-                                .foregroundStyle(Palette.textTertiary)
-                            dotSeparator
-                        }
-                        PulsingDot(color: Palette.red, size: 5)
-                        Text("DEVELOPING")
-                            .font(.custom("Bebas Neue", size: 10)).tracking(2)
-                            .foregroundStyle(Palette.red)
-                    }
-                    contributorRow(album.memberIds)
-                        .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
-                chevron
-            }
-            .padding(12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pressEffect(scale: 0.98)
-        .accessibilityLabel("\(album.name), developing roll \(rollNumber), \(album.memberIds.count) members")
-        .accessibilityHint("Double-tap to open. Long-press for more actions.")
-        .contextMenu { rollContextMenu(album: album) }
-    }
-
-    /// Red-glow film-canister glyph used in place of the hero photo for developing rolls.
-    private var developingGlyph: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(RadialGradient(
-                    colors: [
-                        Color(red: 0.28, green: 0.06, blue: 0.04),
-                        Color(red: 0.09, green: 0.02, blue: 0.02)
-                    ],
-                    center: .center, startRadius: 4, endRadius: 60
-                ))
-                .frame(width: 76, height: 76)
-            Circle()
-                .fill(Palette.darkRed.opacity(0.4))
-                .frame(width: 32, height: 32)
-                .blur(radius: 9)
-            Image(systemName: "camera.aperture")
-                .font(.system(size: 22))
-                .foregroundStyle(Palette.darkRed)
-        }
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Palette.darkRed.opacity(0.4), lineWidth: 1))
-        .accessibilityHidden(true)
-    }
-
-    private func countdownString(_ album: Album) -> String {
-        let interval = max(0, album.revealAt.timeIntervalSince(now))
-        let days = Int(interval) / 86400
-        let hours = (Int(interval) % 86400) / 3600
-        if days > 0 { return "REVEALS IN \(days)D \(hours)H" }
-        let minutes = (Int(interval) % 3600) / 60
-        if hours > 0 { return "REVEALS IN \(hours)H \(minutes)M" }
-        return "REVEALS IN \(minutes)M"
-    }
-
-    // MARK: - Archive row — hero photo + metadata + contributor row
-
-    private func archiveRow(_ album: Album, rollNumber: Int) -> some View {
-        Button {
-            UISelectionFeedbackGenerator().selectionChanged()
-            presentedAlbum = album
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                heroPhoto(album)
-                VStack(alignment: .leading, spacing: 5) {
-                    rollHeaderLine(rollNumber: rollNumber, dateOrCountdown: dateStamp(album), color: Palette.gold)
-                    Text(album.name.uppercased())
-                        .font(.custom("Bebas Neue", size: 18)).tracking(2)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    HStack(spacing: 6) {
-                        if let loc = SampleData.location(forAlbumId: album.id ?? "") {
-                            Image(systemName: "mappin").font(.system(size: 8))
-                                .foregroundStyle(Palette.textTertiary)
-                            Text(loc.uppercased())
-                                .font(.custom("Bebas Neue", size: 10)).tracking(1.5)
-                                .foregroundStyle(Palette.textTertiary)
-                            dotSeparator
-                        }
-                        Text("\(shotCount(album)) SHOTS")
-                            .font(.custom("Menlo", size: 10)).tracking(1)
-                            .foregroundStyle(Palette.gold)
-                    }
-                    contributorRow(album.memberIds)
-                        .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
-                chevron
-            }
-            .padding(12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pressEffect(scale: 0.98)
-        .accessibilityLabel("\(album.name), roll \(rollNumber), \(shotCount(album)) shots, \(album.memberIds.count) members")
-        .accessibilityHint("Double-tap to open. Long-press for more actions.")
-        .contextMenu { rollContextMenu(album: album) }
-    }
-
-    private func heroPhoto(_ album: Album) -> some View {
-        AsyncImage(url: URL(string: album.coverPhotoURL ?? "")) { phase in
-            switch phase {
-            case .success(let img): img.resizable().scaledToFill()
-            default: ShimmerPlaceholder()
-            }
-        }
-        .frame(width: 76, height: 76)
-        .clipped()
-        .overlay(Rectangle().stroke(Palette.border, lineWidth: 1))
-        .accessibilityHidden(true)
-    }
-
-    /// "ROLL 07  ──────────  MAY 14 2026" header line shared between archive and developing rows.
-    private func rollHeaderLine(rollNumber: Int, dateOrCountdown: String, color: Color) -> some View {
-        HStack(spacing: 6) {
-            Text("ROLL \(String(format: "%02d", rollNumber))")
-                .font(.custom("Menlo", size: 9)).tracking(2)
-                .foregroundStyle(color)
-            Rectangle().fill(color.opacity(0.3)).frame(height: 1)
-            Text(dateOrCountdown)
-                .font(.custom("Menlo", size: 9)).tracking(1.5)
-                .foregroundStyle(color.opacity(0.85))
-        }
-    }
-
-    private func dateStamp(_ album: Album) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d yyyy"
-        return f.string(from: album.createdAt).uppercased()
-    }
-
-    private func shotCount(_ album: Album) -> Int {
-        SampleData.shots(forAlbumId: album.id ?? "").count
-    }
-
-    private var chevron: some View {
-        Image(systemName: "chevron.right")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Palette.textTertiary)
-    }
-
-    private var dotSeparator: some View {
-        Circle().fill(Palette.textTertiary.opacity(0.4)).frame(width: 3, height: 3)
-    }
-
-    /// Contributors row — clean, no overlap, names visible up to 4 then "+N".
-    private func contributorRow(_ memberIds: [String]) -> some View {
-        let display = Array(memberIds.prefix(4))
-        let extra = memberIds.count - display.count
-        return HStack(spacing: 6) {
-            HStack(spacing: 4) {
-                ForEach(Array(display.enumerated()), id: \.offset) { _, uid in
-                    AlbumMemberAvatar(uid: uid, size: 20)
-                        .overlay(Circle().stroke(Palette.border, lineWidth: 1))
-                }
-            }
-            // Show first contributor's name as a textual handle, with "+N" for the rest.
-            if let firstName = memberLabel(memberIds.first ?? "") {
-                Text(firstName)
-                    .font(.custom("Times New Roman", size: 11)).italic()
-                    .foregroundStyle(Palette.textSecondary)
-                    .lineLimit(1)
-            }
-            if extra > 0 {
-                Text("+ \(extra)")
-                    .font(.custom("Menlo", size: 9)).tracking(0.5)
-                    .foregroundStyle(Palette.textTertiary)
-            }
-        }
-    }
-
-    /// Translates a memberId into a short readable label.
-    private func memberLabel(_ uid: String) -> String? {
-        if uid == "me" { return "you" }
-        if let friend = SampleData.friend(forMemberId: uid) {
-            return friend.username
-        }
-        return nil
-    }
-
     // MARK: - Saved shots rail
     //
-    // Reads bookmarked shot ids out of SavedShotsStore and walks every sample
-    // album to find matching shots. Small per-tile cards on a horizontal scroll.
+    // Bookmarked shots, persisted locally on the device (`SavedShotsStore`).
 
-    private var savedShots: [(album: Album, shot: Shot)] {
-        let saved = SavedShotsStore.shared.savedShotIds
-        guard !saved.isEmpty else { return [] }
-        var out: [(Album, Shot)] = []
-        for album in SampleData.albums {
-            let shots = SampleData.shots(forAlbumId: album.id ?? "")
-            for s in shots where (s.id.map { saved.contains($0) } ?? false) {
-                out.append((album, s))
-            }
-        }
-        return out
-    }
+    private var savedShots: [SavedShot] { SavedShotsStore.shared.saved }
 
     private var savedRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 10) {
-                ForEach(Array(savedShots.enumerated()), id: \.offset) { idx, pair in
+                ForEach(Array(savedShots.enumerated()), id: \.offset) { idx, shot in
                     ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
                         VStack(alignment: .leading, spacing: 5) {
                             ZStack(alignment: .topTrailing) {
-                                AsyncImage(url: URL(string: pair.shot.photoURL)) { phase in
+                                AsyncImage(url: URL(string: shot.photoURL)) { phase in
                                     switch phase {
                                     case .success(let img): img.resizable().scaledToFill()
                                     default: ShimmerPlaceholder()
@@ -723,7 +421,6 @@ struct ProfileView: View {
                                 }
                                 .frame(width: 92, height: 92)
                                 .clipped()
-                                .filmStockGrade(pair.album.filmStock)
                                 .overlay(Rectangle().stroke(Palette.border, lineWidth: 1))
                                 Image(systemName: "bookmark.fill")
                                     .font(.system(size: 9))
@@ -733,103 +430,21 @@ struct ProfileView: View {
                                     .clipShape(Circle())
                                     .padding(4)
                             }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(pair.album.name.uppercased())
-                                    .font(.custom("Bebas Neue", size: 10)).tracking(1.5)
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .lineLimit(1)
-                                if let by = memberLabel(pair.shot.userId) {
-                                    Text("by \(by)")
-                                        .font(.custom("Times New Roman", size: 9)).italic()
-                                        .foregroundStyle(Palette.textTertiary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(width: 92, alignment: .leading)
+                            Text(shot.albumName.uppercased())
+                                .font(.custom("Bebas Neue", size: 10)).tracking(1.5)
+                                .foregroundStyle(Palette.textPrimary)
+                                .lineLimit(1)
+                                .frame(width: 92, alignment: .leading)
                         }
                         .pressEffect()
-                        .accessibilityLabel("Saved shot from \(pair.album.name)")
+                        .accessibilityLabel("Saved shot from \(shot.albumName)")
                     }
                 }
             }
         }
     }
 
-    // MARK: - You appear in — horizontal scroll with names visible (no gradient overlay)
-
-    private var youAppearInRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(Array(SampleData.youAppearInShots.enumerated()), id: \.offset) { idx, entry in
-                    ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            AsyncImage(url: URL(string: entry.shot.photoURL)) { phase in
-                                switch phase {
-                                case .success(let img): img.resizable().scaledToFill()
-                                default: ShimmerPlaceholder()
-                                }
-                            }
-                            .frame(width: 92, height: 92)
-                            .clipped()
-                            .overlay(Rectangle().stroke(Palette.border, lineWidth: 1))
-                            .pressEffect()
-                            .accessibilityLabel("Photo from \(entry.albumName)")
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(entry.albumName.uppercased())
-                                    .font(.custom("Bebas Neue", size: 10)).tracking(1.5)
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .lineLimit(1)
-                                if let by = memberLabel(entry.shot.userId) {
-                                    Text("by \(by)")
-                                        .font(.custom("Times New Roman", size: 9)).italic()
-                                        .foregroundStyle(Palette.textTertiary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(width: 92, alignment: .leading)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Footer: design gallery + archive metadata
-
-    private var designGalleryCard: some View {
-        Button { showGallery = true } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    Palette.gold.opacity(0.12)
-                    Image(systemName: "rectangle.grid.2x2.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(Palette.gold)
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("DESIGN GALLERY")
-                        .font(.custom("Bebas Neue", size: 13)).tracking(3)
-                        .foregroundStyle(Palette.textPrimary)
-                    Text("38 wireframe screens · sample data")
-                        .font(.custom("Times New Roman", size: 11)).italic()
-                        .foregroundStyle(Palette.textTertiary)
-                }
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Palette.textSecondary)
-            }
-            .padding(10)
-            .background(Palette.surface)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.border, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .pressEffect()
-        .accessibilityLabel("Design gallery, 38 wireframe screens")
-    }
-
-    /// Tiny ledger footer — archive stats stamped in monospace.
+    // MARK: - Footer: archive metadata
     private var archiveFooter: some View {
         HStack {
             Rectangle().fill(Palette.border).frame(height: 1)

@@ -2,6 +2,64 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() { return request.auth != null; }
+
+    // ---- Users ----
+    // Profiles are world-readable (so avatars/names/search work for any signed-in
+    // user). You can only write your OWN profile. `friendIds` and `fcmTokens` are
+    // maintained by the client (token) and Cloud Functions (friend accept).
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if false;
+
+      // Activity feed + notifications are written ONLY by Cloud Functions (admin
+      // SDK bypasses rules). Clients may read/update their own (e.g. mark read),
+      // but never create.
+      match /feed/{eventId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if false;
+      }
+      match /notifications/{notifId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow update: if signedIn() && request.auth.uid == uid
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+        allow create, delete: if false;
+      }
+    }
+
+    // ---- Username registry (uniqueness + search support) ----
+    // Claim a handle only if it's free and maps to you. No deletes/updates from
+    // clients (handle changes would need a Function to keep both docs in sync).
+    match /usernames/{handle} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---- Invite codes ----
+    // Readable so a joiner can resolve a code → albumId. Created by the roll
+    // creator at album creation.
+    match /invites/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if false;
+    }
+
+    // ---- Friend requests ----
+    match /friendRequests/{reqId} {
+      allow read: if signedIn() &&
+                  (request.auth.uid == resource.data.fromUid ||
+                   request.auth.uid == resource.data.toUid);
+      allow create: if signedIn() && request.resource.data.fromUid == request.auth.uid;
+      // The recipient may accept/decline (only the status field changes).
+      allow update: if signedIn() && request.auth.uid == resource.data.toUid
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+      allow delete: if signedIn() &&
+                    (request.auth.uid == resource.data.fromUid ||
+                     request.auth.uid == resource.data.toUid);
+    }
+
     // ---- Albums ----
     match /albums/{albumId} {
       function isSignedIn() {
@@ -40,8 +98,10 @@ service cloud.firestore {
                     // even before they're a member)
                     || (isSignedIn() && joiningSelfOnly() && !(request.auth.uid in resource.data.memberIds));
 
-      // Delete: creator only.
-      allow delete: if isCreator();
+      // Delete: the creator, or the last remaining member as they leave (an
+      // empty roll cleans itself up — see AlbumService.leave).
+      allow delete: if isCreator()
+                    || (isMember() && resource.data.memberIds.size() == 1);
 
       // ---- Shots subcollection ----
       match /shots/{shotId} {
@@ -55,8 +115,10 @@ service cloud.firestore {
                  <= request.time;
         }
 
-        // Read shots only after reveal time AND only by members.
-        allow read: if parentMember() && parentRevealed();
+        // Members may read their OWN shots anytime (so the camera counter works),
+        // but everyone else's shots only after the reveal time.
+        allow read: if parentMember() &&
+                    (parentRevealed() || resource.data.userId == request.auth.uid);
 
         // Create a shot only as yourself and only while album is still developing.
         allow create: if parentMember()
@@ -68,10 +130,34 @@ service cloud.firestore {
                       && request.resource.data.diff(resource.data).affectedKeys()
                           .hasOnly(['reactions']);
 
-        // Delete: only album creator (so they can delete the album cleanly).
+        // Delete: the album creator, or the last remaining member tearing the
+        // roll down as they leave (so the empty-roll cleanup can remove shots).
         allow delete: if isSignedIn() &&
-                      request.auth.uid ==
-                      get(/databases/$(database)/documents/albums/$(albumId)).data.creatorId;
+                      (request.auth.uid ==
+                        get(/databases/$(database)/documents/albums/$(albumId)).data.creatorId
+                       || (request.auth.uid in
+                            get(/databases/$(database)/documents/albums/$(albumId)).data.memberIds
+                           && get(/databases/$(database)/documents/albums/$(albumId)).data.memberIds.size() == 1));
+      }
+
+      // ---- Comments subcollection ----
+      match /comments/{commentId} {
+        function member() {
+          return isSignedIn() &&
+                 request.auth.uid in
+                 get(/databases/$(database)/documents/albums/$(albumId)).data.memberIds;
+        }
+        // Members read the thread and post as themselves.
+        allow read: if member();
+        allow create: if member() && request.resource.data.userId == request.auth.uid;
+        // Likes: any member may toggle, but only the likedBy field changes.
+        allow update: if member()
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy']);
+        // Authors may delete their own comment; creator may delete any.
+        allow delete: if member() &&
+                      (request.auth.uid == resource.data.userId ||
+                       request.auth.uid ==
+                       get(/databases/$(database)/documents/albums/$(albumId)).data.creatorId);
       }
     }
   }

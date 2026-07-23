@@ -1,0 +1,32 @@
+rules_version = '2';
+
+// NOTE: Storage rules can't read Firestore, so membership is enforced at the
+// Firestore layer (shot docs are members-only). Here we keep it to signed-in
+// access with sane content-type/size limits. Photo URLs are unguessable
+// (album id + random shot id), so read-for-signed-in is acceptable.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() { return request.auth != null; }
+    function isImage() {
+      return request.resource.contentType.matches('image/.*')
+             && request.resource.size < 12 * 1024 * 1024; // 12 MB
+    }
+
+    // Roll shots.
+    match /albums/{albumId}/shots/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && isImage();
+    }
+
+    // User avatars — you may only write your own.
+    match /users/{uid}/avatar.jpg {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == uid && isImage();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

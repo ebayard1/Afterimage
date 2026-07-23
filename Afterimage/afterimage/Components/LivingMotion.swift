@@ -25,35 +25,61 @@ struct LivingSprocketStrip: View {
     /// Tunable period (seconds) for one full sprocket-hole cycle.
     var period: Double = 5.0
     /// Vertical strip height — matches the surrounding card padding.
-    var height: CGFloat = 9
-    var holeWidth: CGFloat = 8
-    var holeHeight: CGFloat = 5
-    var holeSpacing: CGFloat = 3
+    /// Geometry follows a real 35mm Kodak frame (KS-1870 perforation):
+    /// hole W:H = 1.41:1, spacing = 0.70 × hole width. Holes are sized large
+    /// so they read as big, distinct perforations (fewer per row).
+    var height: CGFloat = 16
+    var holeWidth: CGFloat = 19
+    var holeHeight: CGFloat = 13.5
+    var holeSpacing: CGFloat = 13
+    /// Band (film) colour behind the holes. Use `.clear` to draw only the
+    /// punched holes — lets this strip be overlaid on top of the glare so the
+    /// holes stay dark while the film band keeps its sheen.
+    var bandBackground: Color = .black
+    /// When set, the strip ignores its own clock and drifts left by this many
+    /// points (taken modulo the hole pitch so it recycles seamlessly). Used by
+    /// `FilmStripSection` to lock the perforations to the film frames and edge
+    /// numbers so the entire strip pans in unison at one speed.
+    var externalOffset: CGFloat? = nil
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            let phase = (t.truncatingRemainder(dividingBy: period)) / period   // 0…1
-            GeometryReader { geo in
-                let pitch = holeWidth + holeSpacing
-                let count = Int(geo.size.width / pitch) + 2
-                let offset = -CGFloat(phase) * pitch
-                HStack(spacing: holeSpacing) {
-                    ForEach(0..<count, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Palette.background)
-                            .frame(width: holeWidth, height: holeHeight)
+        Group {
+            if let ext = externalOffset {
+                GeometryReader { geo in
+                    holes(width: geo.size.width,
+                          offset: -(ext.truncatingRemainder(dividingBy: holeWidth + holeSpacing)))
+                }
+            } else {
+                // Standalone mode: drift on a slow private clock (used by the
+                // developing card, which has no panning frames to sync to).
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    let phase = (t.truncatingRemainder(dividingBy: period)) / period   // 0…1
+                    GeometryReader { geo in
+                        holes(width: geo.size.width, offset: -CGFloat(phase) * (holeWidth + holeSpacing))
                     }
                 }
-                .offset(x: offset)
             }
         }
         .frame(height: height)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 2)
-        .background(Color(white: 0.07))
+        .background(bandBackground)
         .clipped()
         .accessibilityHidden(true)
+    }
+
+    private func holes(width: CGFloat, offset: CGFloat) -> some View {
+        let pitch = holeWidth + holeSpacing
+        let count = Int(width / pitch) + 2
+        return HStack(spacing: holeSpacing) {
+            ForEach(0..<count, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 2.5)
+                    .fill(Palette.background)
+                    .frame(width: holeWidth, height: holeHeight)
+            }
+        }
+        .offset(x: offset)
     }
 }
 

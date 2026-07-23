@@ -9,11 +9,15 @@ struct RollMapView: View {
     @State private var selected: Album?
     @State private var presentedAlbum: Album?
     @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var albumService = AlbumService()
+
+    private var sourceAlbums: [Album] {
+        albumService.albums
+    }
 
     private var pins: [(album: Album, coord: CLLocationCoordinate2D)] {
-        SampleData.albums.compactMap { album in
-            guard album.isRevealed, let id = album.id,
-                  let coord = SampleData.coordinate(forAlbumId: id) else { return nil }
+        sourceAlbums.compactMap { album in
+            guard album.isRevealed, let coord = album.mapCoordinate else { return nil }
             return (album, coord)
         }
     }
@@ -51,6 +55,9 @@ struct RollMapView: View {
             }
         }
         .onAppear {
+            if let uid = auth.uid {
+                albumService.startListening(userId: uid)
+            }
             // Frame the pins
             if let first = pins.first {
                 cameraPosition = .region(MKCoordinateRegion(
@@ -68,13 +75,13 @@ struct RollMapView: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(album.filmStock?.accent ?? Palette.gold)
+                    .fill(Palette.gold)
                     .frame(width: 28, height: 28)
                     .overlay(Circle().stroke(.white, lineWidth: 2))
-                    .shadow(color: .black.opacity(0.5), radius: 4, x: 0, y: 2)
+                    .warmShadow(radius: 4, y: 2, opacity: 0.5)
                 Image(systemName: "film.fill")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(album.filmStock?.isMonochrome == true ? .white : .black)
+                    .foregroundStyle(.black)
             }
         }
         .buttonStyle(.plain)
@@ -127,7 +134,7 @@ struct RollMapView: View {
                         .font(.custom("Bebas Neue", size: 18)).tracking(2)
                         .foregroundStyle(Palette.textPrimary)
                         .lineLimit(1)
-                    if let loc = SampleData.location(forAlbumId: album.id ?? "") {
+                    if let loc = album.mapLocationName {
                         HStack(spacing: 4) {
                             Image(systemName: "mappin").font(.system(size: 9))
                                 .foregroundStyle(Palette.gold)

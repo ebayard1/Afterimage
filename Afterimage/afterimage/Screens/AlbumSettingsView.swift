@@ -9,11 +9,13 @@ import SwiftUI
 struct AlbumSettingsView: View {
     let album: Album
     @Environment(AuthService.self) private var auth
+    @Environment(UserService.self) private var users
     @Environment(ToastCenter.self) private var toast
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var showDeleteConfirm = false
     @State private var showLeaveConfirm = false
+    @State private var albumService = AlbumService()
     let onAlbumGone: () -> Void
 
     init(album: Album, onAlbumGone: @escaping () -> Void) {
@@ -22,7 +24,7 @@ struct AlbumSettingsView: View {
         self.onAlbumGone = onAlbumGone
     }
 
-    private var isCreator: Bool { auth.uid == album.creatorId || album.isSample }
+    private var isCreator: Bool { auth.uid == album.creatorId }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -117,7 +119,7 @@ struct AlbumSettingsView: View {
         .background(
             Capsule().fill(Palette.surface.opacity(0.75))
                 .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 1))
-                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 6)
+                .warmShadow(radius: 18, y: 6, opacity: 0.35)
         )
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -253,10 +255,7 @@ struct AlbumSettingsView: View {
 
     private func memberLabel(_ uid: String) -> String {
         if uid == auth.uid { return "you" }
-        if uid == "me" { return "you" }
-        if let friend = SampleData.friend(forMemberId: uid) {
-            return friend.displayName
-        }
+        if let profile = users.profile(for: uid) { return profile.displayName }
         return String(uid.prefix(8)) + "…"
     }
 
@@ -378,18 +377,33 @@ struct AlbumSettingsView: View {
 
     private func rename() {
         UISelectionFeedbackGenerator().selectionChanged()
-        toast.success("demo: roll renamed to \"\(name)\"")
+        let newName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, let id = album.id else { return }
+        Task {
+            do { try await albumService.rename(albumId: id, newName: newName)
+                 toast.success("renamed to \"\(newName)\"") }
+            catch { toast.error("couldn't rename") }
+        }
     }
 
     private func leave() {
-        toast.show("demo: you left the roll")
-        onAlbumGone()
-        dismiss()
+        guard let id = album.id else { return }
+        Task {
+            do {
+                if let uid = auth.uid { try await albumService.leave(albumId: id, userId: uid) }
+                toast.show("you left the roll")
+                onAlbumGone(); dismiss()
+            } catch { toast.error("couldn't leave") }
+        }
     }
 
     private func deleteAlbum() {
-        toast.success("demo: roll deleted")
-        onAlbumGone()
-        dismiss()
+        guard let id = album.id else { return }
+        Task {
+            do { try await albumService.delete(albumId: id)
+                 toast.success("roll deleted")
+                 onAlbumGone(); dismiss() }
+            catch { toast.error("couldn't delete") }
+        }
     }
 }

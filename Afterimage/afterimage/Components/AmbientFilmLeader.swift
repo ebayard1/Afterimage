@@ -11,8 +11,10 @@ struct AmbientFilmLeader: View {
     var period: Double = 1.8
     var height: CGFloat = 22
 
+    // Geometry follows a real 35mm Kodak frame (KS-1870 perforation):
+    // hole W:H = 1.41:1, spacing = 0.70 × hole width.
     private let holeWidth: CGFloat = 9
-    private let holeSpacing: CGFloat = 5
+    private let holeSpacing: CGFloat = 6.3
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
@@ -28,7 +30,7 @@ struct AmbientFilmLeader: View {
                         ForEach(0..<count, id: \.self) { _ in
                             RoundedRectangle(cornerRadius: 1.5)
                                 .fill(Palette.background)
-                                .frame(width: holeWidth, height: height * 0.45)
+                                .frame(width: holeWidth, height: holeWidth / 1.41)
                         }
                     }
                     .offset(x: offset)

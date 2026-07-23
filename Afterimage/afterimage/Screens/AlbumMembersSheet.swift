@@ -5,7 +5,14 @@ import SwiftUI
 struct AlbumMembersSheet: View {
     let album: Album
     @Environment(\.dismiss) private var dismiss
-    @State private var presentedFriend: SampleData.SampleFriend?
+    @Environment(UserService.self) private var users
+    @State private var presentedPerson: PersonRef?
+
+    /// Resolve a member uid to a display reference (nil = you/unknown → no tap).
+    private func person(for uid: String) -> PersonRef? {
+        if uid == users.currentProfile?.id { return nil }
+        return users.profile(for: uid)?.asPersonRef
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,8 +44,8 @@ struct AlbumMembersSheet: View {
                     }
                 }
             }
-            .sheet(item: $presentedFriend) { friend in
-                OtherProfileView(friend: friend)
+            .sheet(item: $presentedPerson) { person in
+                OtherProfileView(person: person)
             }
         }
     }
@@ -69,14 +76,16 @@ struct AlbumMembersSheet: View {
 
     @ViewBuilder
     private func row(uid: String) -> some View {
-        let friend = SampleData.friend(forMemberId: uid)
-        let isMe = uid == "me"
+        let ref = person(for: uid)
+        let isMe = uid == users.currentProfile?.id
         let isCreator = uid == album.creatorId
         let body = HStack(spacing: 12) {
-            avatar(for: uid, friend: friend)
+            AlbumMemberAvatar(uid: uid, size: 38)
+                .overlay(Circle().stroke(isCreator ? Palette.gold : Palette.border,
+                                         lineWidth: isCreator ? 1.5 : 1))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(displayName(for: uid, friend: friend))
+                    Text(displayName(for: uid, ref: ref, isMe: isMe))
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Palette.textPrimary)
                     if isCreator {
@@ -96,14 +105,14 @@ struct AlbumMembersSheet: View {
                             .clipShape(Capsule())
                     }
                 }
-                if let friend {
-                    Text(friend.username)
+                if let ref {
+                    Text(ref.handle)
                         .font(.system(size: 11)).italic()
                         .foregroundStyle(Palette.textTertiary)
                 }
             }
             Spacer()
-            if friend != nil {
+            if ref != nil {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.textTertiary)
@@ -114,43 +123,17 @@ struct AlbumMembersSheet: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.border, lineWidth: 1))
         .cornerRadius(6)
 
-        if let friend {
-            Button { presentedFriend = friend } label: { body }
+        if let ref {
+            Button { presentedPerson = ref } label: { body }
                 .buttonStyle(.plain)
         } else {
             body
         }
     }
 
-    @ViewBuilder
-    private func avatar(for uid: String, friend: SampleData.SampleFriend?) -> some View {
-        ZStack {
-            if let seed = friend?.photoSeed {
-                AsyncImage(url: URL(string: "https://picsum.photos/seed/\(seed)/120/120")) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Palette.surface
-                    }
-                }
-            } else if uid == "me" {
-                Circle().fill(Palette.gold.opacity(0.25))
-                Image(systemName: "person.fill").foregroundStyle(Palette.gold).font(.system(size: 14))
-            } else {
-                Circle().fill(Palette.surface)
-                Text(uid.prefix(1).uppercased())
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Palette.textSecondary)
-            }
-        }
-        .frame(width: 38, height: 38)
-        .clipShape(Circle())
-        .overlay(Circle().stroke(uid == album.creatorId ? Palette.gold : Palette.border,
-                                 lineWidth: uid == album.creatorId ? 1.5 : 1))
-    }
-
-    private func displayName(for uid: String, friend: SampleData.SampleFriend?) -> String {
-        if let friend { return friend.displayName }
-        if uid == "me" { return "you" }
+    private func displayName(for uid: String, ref: PersonRef?, isMe: Bool) -> String {
+        if isMe { return "you" }
+        if let ref { return ref.displayName }
         return String(uid.prefix(8)) + "…"
     }
 }

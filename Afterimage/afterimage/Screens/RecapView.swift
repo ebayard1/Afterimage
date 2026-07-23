@@ -29,7 +29,6 @@ struct RecapView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .clipped()
                             .scaleEffect(1.05 + 0.05 * progress) // subtle ken-burns
-                            .filmStockGrade(album.filmStock)
                     default:
                         ShimmerPlaceholder()
                     }

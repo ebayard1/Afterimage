@@ -1,16 +1,14 @@
 import SwiftUI
 
 struct OtherProfileView: View {
-    let friend: SampleData.SampleFriend
+    let person: PersonRef
     @Environment(\.dismiss) private var dismiss
     @Environment(ToastCenter.self) private var toast
     @State private var isFollowing = false
     @State private var showBlockReport = false
 
-    private var theirDispos: [Album] {
-        // Pretend their public albums are a stable subset of the catalog.
-        Array(SampleData.albums.shuffled().prefix(6))
-    }
+    // No public-album concept yet — the grid stays empty.
+    private var theirDispos: [Album] { [] }
 
     var body: some View {
         NavigationStack {
@@ -26,7 +24,7 @@ struct OtherProfileView: View {
                     .padding(16)
                 }
             }
-            .navigationTitle(friend.username)
+            .navigationTitle(person.handle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Palette.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
@@ -44,14 +42,14 @@ struct OtherProfileView: View {
                 }
             }
             .sheet(isPresented: $showBlockReport) {
-                BlockReportSheet(target: friend.username)
+                BlockReportSheet(target: person.handle)
             }
         }
     }
 
     private var avatarRow: some View {
         HStack(spacing: 12) {
-            AsyncImage(url: URL(string: "https://picsum.photos/seed/\(friend.photoSeed)/200/200")) { phase in
+            AsyncImage(url: avatarURL) { phase in
                 switch phase {
                 case .success(let img): img.resizable().scaledToFill()
                 default: ShimmerPlaceholder()
@@ -63,19 +61,28 @@ struct OtherProfileView: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(friend.displayName).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textPrimary)
-                Text("\(friend.mutualAlbums) mutual album\(friend.mutualAlbums == 1 ? "" : "s")")
-                    .font(.system(size: 11)).italic().foregroundStyle(Palette.textTertiary)
+                Text(person.displayName).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textPrimary)
+                if let mutual = person.mutualAlbums {
+                    Text("\(mutual) mutual album\(mutual == 1 ? "" : "s")")
+                        .font(.system(size: 11)).italic().foregroundStyle(Palette.textTertiary)
+                } else {
+                    Text(person.handle)
+                        .font(.system(size: 11)).italic().foregroundStyle(Palette.textTertiary)
+                }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
                 Button {
                     isFollowing.toggle()
-                    toast.show(isFollowing ? "following \(friend.username)" : "unfollowed")
+                    toast.show(isFollowing ? "following \(person.handle)" : "unfollowed")
                 } label: {
-                    Text(isFollowing ? "✓ following" : "+ follow")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isFollowing ? Palette.gold : .white)
+                    HStack(spacing: 5) {
+                        Image(systemName: isFollowing ? "checkmark" : "plus")
+                            .font(.system(size: 9, weight: .medium))
+                        Text(isFollowing ? "following" : "follow")
+                            .font(.custom("Bebas Neue", size: 14)).tracking(2)
+                    }
+                        .foregroundStyle(isFollowing ? Palette.gold : Palette.textPrimary)
                         .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(isFollowing ? Color.clear : Palette.darkRed)
                         .overlay(Capsule().stroke(isFollowing ? Palette.gold : .clear, lineWidth: 1.5))
@@ -98,13 +105,20 @@ struct OtherProfileView: View {
         }
     }
 
+    /// Real avatar URL, falling back to the sample seed, else a generic seed.
+    private var avatarURL: URL? {
+        if let urlStr = person.photoURL, !urlStr.isEmpty { return URL(string: urlStr) }
+        if let seed = person.photoSeed { return URL(string: "https://picsum.photos/seed/\(seed)/200/200") }
+        return nil
+    }
+
     private var statsCard: some View {
         HStack(spacing: 0) {
             stat("\(theirDispos.count)", "albums")
             divider
-            stat("\(Int.random(in: 80...260))", "shots")
+            stat("—", "shots")
             divider
-            stat("\(friend.mutualFriends + Int.random(in: 5...30))", "friends")
+            stat("\(person.mutualFriends ?? 0)", "friends")
         }
         .padding(.vertical, 12)
         .background(Palette.surface)

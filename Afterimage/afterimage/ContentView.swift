@@ -3,56 +3,68 @@ import SwiftUI
 struct ContentView: View {
     @State private var auth = AuthService()
     @State private var toast = ToastCenter()
+    @State private var users = UserService()
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
-
-    // Versioned onboarding reset. Bump CURRENT_RESET_VERSION whenever we want
-    // every device to play the onboarding from scratch on its next launch.
-    // The check fires once per version bump, then never again.
-    private static let CURRENT_RESET_VERSION = 1
-    @AppStorage("onboardingResetVersion") private var resetVersion = 0
 
     var body: some View {
         ZStack {
             Palette.background.ignoresSafeArea()
 
-            if auth.isLoading {
-                ProgressView().tint(Palette.gold)
-            } else if auth.isSignedIn {
-                MainTabView()
-                    .environment(auth)
-                    .environment(toast)
-            } else if !hasSeenOnboarding {
-                OnboardingFlow {
-                    hasSeenOnboarding = true
-                }
-            } else {
-                SignInView()
-                    .environment(auth)
-                    .environment(toast)
-            }
+            content
 
             ToastOverlay()
                 .environment(toast)
         }
-        .onAppear { applyOnboardingResetIfNeeded() }
+        .onAppear {
+            if let uid = auth.uid { users.startListening(uid: uid); wirePush(uid: uid) }
+        }
+        // Keep the current user's profile listener in sync with auth.
+        .onChange(of: auth.uid) { _, uid in
+            if let uid { users.startListening(uid: uid); wirePush(uid: uid) }
+            else { users.stopListening() }
+        }
     }
 
-    /// Wipes every onboarding-related flag the first time the app launches
-    /// under a new `CURRENT_RESET_VERSION`. Bump that constant whenever you
-    /// want all users (or just yourself, since UserDefaults is per-install)
-    /// to play onboarding from scratch.
-    private func applyOnboardingResetIfNeeded() {
-        guard resetVersion < Self.CURRENT_RESET_VERSION else { return }
-        let defaults = UserDefaults.standard
-        // Onboarding + coach marks
-        defaults.removeObject(forKey: "hasSeenOnboarding")
-        defaults.removeObject(forKey: "hasSeenFeedCoach")
-        defaults.removeObject(forKey: "hasSeenCameraCoach")
-        // Bookmarked shots (sample-only mode means these are stale)
-        defaults.removeObject(forKey: "afterimage.savedShotIds")
-        // Stamp the version so this never fires again until the next bump.
-        resetVersion = Self.CURRENT_RESET_VERSION
-        // Force the @AppStorage observer to pick up the cleared value.
-        hasSeenOnboarding = false
+    /// Save the FCM push token onto the signed-in user's profile.
+    private func wirePush(uid: String) {
+        PushRegistry.shared.onToken = { token in
+            Task { await users.upsertFcmToken(token, uid: uid) }
+        }
+        if let token = PushRegistry.shared.token {
+            Task { await users.upsertFcmToken(token, uid: uid) }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if auth.isLoading {
+            ProgressView().tint(Palette.gold)
+        } else if auth.isSignedIn {
+            if users.isLoadingProfile {
+                ProgressView().tint(Palette.gold)
+            } else if users.hasProfile {
+                mainApp
+            } else {
+                ProfileSetupView()
+                    .environment(auth)
+                    .environment(users)
+                    .environment(toast)
+            }
+        } else if !hasSeenOnboarding {
+            OnboardingFlow {
+                hasSeenOnboarding = true
+            }
+        } else {
+            SignInView()
+                .environment(auth)
+                .environment(toast)
+        }
+    }
+
+    private var mainApp: some View {
+        MainTabView()
+            .environment(auth)
+            .environment(toast)
+            .environment(users)
     }
 }

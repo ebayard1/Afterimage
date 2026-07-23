@@ -2,91 +2,174 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
+// MARK: - CameraView — the physical camera
+//
+// The whole camera screen IS the device: the `CameraShell` asset (a photoreal
+// point-and-shoot back) fills the available frame, top-anchored, and every
+// control is the real control ON the shell:
+//
+//   • the white screen cutout   → the live viewfinder (video never draws
+//                                 outside it — flash/black-out ritual and the
+//                                 "sealed" confirmation all render inside)
+//   • the ⚡ button              → flash toggle (gold glow ring when armed)
+//   • the flip-camera button    → front/back flip
+//   • the big bottom circle     → the shutter
+//   • the red LED               → decorative power light on the shell art
+//
+// A Menlo frame counter (taken/total, e.g. 13/24) is printed on the leather
+// between the screen and the shutter. One roll at a time — no roll selector.
+//
+// All hit-targets and the screen rect are mapped in the shell image's own
+// pixel space and scaled with it, so the layout is exact at every size.
 struct CameraView: View {
     let album: Album
+    /// When true, show a close (✕) button — the camera is presented as a
+    /// full-screen cover (e.g. from an album) where there's no tab bar to leave by.
+    let showsCloseButton: Bool
+    @Environment(\.dismiss) private var dismiss
     @Environment(AuthService.self) private var auth
     @Environment(ToastCenter.self) private var toast
-    @Environment(\.dismiss) private var dismiss
+    @AppStorage("lastUsedAlbumId") private var lastUsedAlbumId: String = ""
     @State private var camera = CameraController()
     @State private var shotService = ShotService()
     @State private var isUploading = false
     @State private var showConfirmation = false
-    @State private var note: String = ""
-    @State private var noteFocused: Bool = false
     @State private var flashOn: Bool = false
     @State private var usingFront: Bool = false
+    /// Focus ring position, in the viewfinder's own coordinate space.
     @State private var focusIndicator: CGPoint?
-    @FocusState private var noteFieldFocus: Bool
     @AppStorage("hasSeenCameraCoach") private var hasSeenCameraCoach = false
     @State private var showCameraCoach = false
     @State private var flashFlash = false
     @State private var blackOut = false
-    @State private var isRecordingVoice = false
-    @State private var voiceDuration: Double = 0  // 0..10
-    @State private var voiceTimer: Timer?
+
+    init(album: Album, showsCloseButton: Bool = false) {
+        self.album = album
+        self.showsCloseButton = showsCloseButton
+    }
+
+    /// Shots each member gets per roll — the "24 exposures" of the disposable.
+    private let rollCapacity = 24
+
+    // MARK: Shell map — everything in the 887×1774 pixel space of the
+    // `CameraShell` asset. Measured off the artwork itself.
+    private enum Shell {
+        static let size = CGSize(width: 887, height: 1774)
+        /// The white screen cutout the viewfinder lives in.
+        static let screen = CGRect(x: 237, y: 366, width: 441, height: 761)
+        static let flashCenter = CGPoint(x: 642, y: 153)
+        static let flipCenter = CGPoint(x: 777, y: 154)
+        static let controlRadius: CGFloat = 62
+        static let shutterCenter = CGPoint(x: 455, y: 1497)
+        static let shutterRadius: CGFloat = 122
+        /// Frame-counter print position (left of the red LED, on the leather).
+        static let counterCenter = CGPoint(x: 150, y: 1250)
+    }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            CameraPreviewView(controller: camera)
-                .ignoresSafeArea()
-                .onTapGesture { location in
-                    handleTap(location)
+        GeometryReader { geo in
+            // Fit the shell into the available frame, TOP-anchored and centered
+            // horizontally — maximum room below for the (compact) tab bar.
+            let s = min(geo.size.width / Shell.size.width,
+                        geo.size.height / Shell.size.height)
+            let shellW = Shell.size.width * s
+            let shellH = Shell.size.height * s
+            let originX = (geo.size.width - shellW) / 2
+            let box = CGRect(
+                x: originX + Shell.screen.minX * s,
+                y: Shell.screen.minY * s,
+                width: Shell.screen.width * s,
+                height: Shell.screen.height * s
+            )
+
+            ZStack(alignment: .topLeading) {
+                // 1. The device shell itself.
+                Image("CameraShell")
+                    .resizable()
+                    .frame(width: shellW, height: shellH)
+                    .offset(x: originX, y: 0)
+                    .accessibilityHidden(true)
+
+                // 2. The live viewfinder — clipped to the white screen cutout,
+                // inset a hair so the printed bezel stays visible. Everything
+                // that happens to the picture (focus ring, shutter ritual,
+                // sealed confirmation) happens INSIDE this box, never outside.
+                viewfinder(box: box, scale: s)
+
+                // 3. Physical controls mapped onto the shell art.
+                shellButton(center: Shell.flashCenter, radius: Shell.controlRadius,
+                            scale: s, originX: originX,
+                            label: flashOn ? "Flash on" : "Flash off",
+                            hint: "Toggles the camera flash") {
+                    flashOn.toggle()
+                    camera.setFlash(flashOn ? .on : .off)
+                } decoration: {
+                    // Gold glow ring when the flash is armed.
+                    Circle()
+                        .stroke(Palette.gold.opacity(flashOn ? 0.9 : 0), lineWidth: 2)
+                        .shadow(color: Palette.gold.opacity(flashOn ? 0.7 : 0), radius: 6)
                 }
 
-            if let p = focusIndicator {
-                Circle()
-                    .stroke(Palette.gold, lineWidth: 1.5)
-                    .frame(width: 60, height: 60)
-                    .position(p)
-                    .transition(.opacity)
-            }
+                shellButton(center: Shell.flipCenter, radius: Shell.controlRadius,
+                            scale: s, originX: originX,
+                            label: usingFront ? "Switch to rear camera" : "Switch to front camera",
+                            hint: "Flips between front and rear cameras") {
+                    usingFront.toggle()
+                    Task { await camera.flip(toFront: usingFront) }
+                } decoration: { EmptyView() }
 
-            VStack {
-                topBar
-                Spacer()
-                bottomControls
-            }
+                shellButton(center: Shell.shutterCenter, radius: Shell.shutterRadius,
+                            scale: s, originX: originX,
+                            label: "Take a shot",
+                            hint: "Captures a photo and seals it until reveal. No retakes.") {
+                    capture()
+                } decoration: { EmptyView() }
+                .disabled(isUploading || remainingShots <= 0)
 
-            if showConfirmation {
-                ZStack {
-                    Color.black.opacity(0.85).ignoresSafeArea()
-                    VStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 40))
-                            .foregroundStyle(Palette.gold)
-                        Text("film contributed")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Palette.gold)
-                        Text("sealed until sunrise")
-                            .font(.system(size: 11)).italic()
-                            .foregroundStyle(Palette.textTertiary)
+                // 4. Frame counter, printed on the leather: taken/total.
+                Text("\(shotService.myShotCount)/\(rollCapacity)")
+                    .font(.custom("Menlo", size: 40 * s).weight(.bold))
+                    .tracking(2)
+                    .foregroundStyle(Palette.gold)
+                    .warmthFlicker(period: 4.6, floor: 0.85)
+                    .position(x: originX + Shell.counterCenter.x * s + 60 * s,
+                              y: Shell.counterCenter.y * s)
+                    .accessibilityLabel("\(shotService.myShotCount) of \(rollCapacity) shots taken on this roll")
+
+                // 5. Close affordance for full-screen-cover presentations.
+                if showsCloseButton {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                        camera.stop()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(9)
+                            .background(.black.opacity(0.45))
+                            .clipShape(Circle())
+                    }
+                    .pressEffect()
+                    .accessibilityLabel("Close camera")
+                    .padding(.leading, 12).padding(.top, 8)
+                }
+
+                if showCameraCoach {
+                    CoachMarkOverlay(surface: .camera) {
+                        hasSeenCameraCoach = true
+                        withAnimation { showCameraCoach = false }
                     }
                 }
-                .transition(.opacity)
             }
-
-            if showCameraCoach {
-                CoachMarkOverlay(surface: .camera) {
-                    hasSeenCameraCoach = true
-                    withAnimation { showCameraCoach = false }
-                }
-            }
-
-            // Shutter ritual: white flash → black-out → return.
-            // The black-out is the psychological "permanence" moment — the frame is gone.
-            if flashFlash {
-                Color.white.ignoresSafeArea().transition(.opacity)
-            }
-            if blackOut {
-                Color.black.ignoresSafeArea().transition(.opacity)
-            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .task {
             await camera.start()
             if let uid = auth.uid, let albumId = album.id {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
+            lastUsedAlbumId = album.id ?? ""
             if !hasSeenCameraCoach {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 withAnimation { showCameraCoach = true }
@@ -95,205 +178,82 @@ struct CameraView: View {
         .onDisappear { camera.stop() }
     }
 
-    private var topBar: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(10)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Circle())
-            }
-            .accessibilityLabel("Close camera")
-            .accessibilityHint("Returns to the roll without taking a shot")
-            Spacer()
-            Button {
-                flashOn.toggle()
-                camera.setFlash(flashOn ? .on : .off)
-            } label: {
-                Image(systemName: flashOn ? "bolt.fill" : "bolt.slash.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(flashOn ? Palette.gold : .white.opacity(0.7))
-                    .padding(10)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Circle())
-            }
-            .pressEffect()
-            .accessibilityLabel(flashOn ? "Flash on" : "Flash off")
-            .accessibilityHint("Toggles the camera flash")
-            Button {
-                usingFront.toggle()
-                Task { await camera.flip(toFront: usingFront) }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(10)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Circle())
-            }
-            .pressEffect()
-            .accessibilityLabel(usingFront ? "Switch to rear camera" : "Switch to front camera")
-            Spacer()
-            Text("\(shotService.myShotCount)")
-                .font(.system(size: 16, weight: .bold).monospacedDigit())
-                .foregroundStyle(Palette.gold)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.black.opacity(0.5))
-                .clipShape(Capsule())
-                .accessibilityLabel("\(shotService.myShotCount) of your shots on this roll")
-        }
-        .padding()
-    }
+    private var remainingShots: Int { max(0, rollCapacity - shotService.myShotCount) }
 
-    private var bottomControls: some View {
-        VStack(spacing: 12) {
-            // Voice note row (only when recording or when something's been captured)
-            if isRecordingVoice || voiceDuration > 0 {
-                voiceNoteStrip
-                    .padding(.horizontal, 24)
-            }
-            // Note field with inline mic button
-            HStack(spacing: 8) {
-                Image(systemName: "text.bubble")
-                    .foregroundStyle(.white.opacity(0.6))
-                TextField("", text: $note, prompt: Text("what were you doing? (optional)").foregroundStyle(.white.opacity(0.4)))
-                    .focused($noteFieldFocus)
-                    .foregroundStyle(.white)
-                    .submitLabel(.done)
-                    .onSubmit { noteFieldFocus = false }
-                if !note.isEmpty {
-                    Button { note = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
-                }
-                Button { toggleVoiceRecord() } label: {
-                    Image(systemName: isRecordingVoice ? "mic.fill" : (voiceDuration > 0 ? "mic.circle.fill" : "mic"))
-                        .foregroundStyle(isRecordingVoice ? Palette.red : (voiceDuration > 0 ? Palette.gold : .white.opacity(0.7)))
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .pressEffect()
-                .accessibilityLabel(isRecordingVoice ? "Stop recording voice note" : "Record voice note")
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(.black.opacity(0.55))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(
-                isRecordingVoice ? Palette.red : .white.opacity(0.15),
-                lineWidth: isRecordingVoice ? 1.5 : 1))
-            .cornerRadius(18)
-            .padding(.horizontal, 24)
+    // MARK: Viewfinder — everything visual stays inside the white box.
 
-            // Flash-charged status LED — only visible when flash is armed.
-            // Pulses softly to sell the "the device is alive, the charge is
-            // ready" disposable-camera metaphor.
-            if flashOn {
-                FlashReadyLED()
+    private func viewfinder(box: CGRect, scale s: CGFloat) -> some View {
+        ZStack {
+            CameraPreviewView(controller: camera)
+
+            if let p = focusIndicator {
+                Circle()
+                    .stroke(Palette.gold, lineWidth: 1.5)
+                    .frame(width: 54, height: 54)
+                    .position(p)
+                    .transition(.opacity)
             }
 
-            Text("NO RETAKES")
-                .font(.custom("Bebas Neue", size: 14)).tracking(6)
-                .foregroundStyle(Palette.gold.opacity(0.85))
-                .warmthFlicker(period: 4.2, floor: 0.78)
+            // Shutter ritual: white flash → black-out → return, all inside the
+            // viewfinder glass. The black-out is the "permanence" moment.
+            if flashFlash { Color.white.transition(.opacity) }
+            if blackOut { Color.black.transition(.opacity) }
 
-            Button(action: capture) {
+            if showConfirmation {
                 ZStack {
-                    Circle()
-                        .stroke(.white.opacity(0.6), lineWidth: 3)
-                        .frame(width: 92, height: 92)
-                    Circle()
-                        .stroke(Palette.gold.opacity(0.35), lineWidth: 1)
-                        .frame(width: 102, height: 102)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 74, height: 74)
-                }
-                .opacity(isUploading ? 0.5 : 1.0)
-                .warmShadow(radius: 14, y: 6, opacity: 0.55)
-            }
-            .buttonStyle(.plain)
-            // Per Emil: scale-on-press should sit in 0.95–0.98. 0.92 reads as
-            // "the button slipped." Shutter is the most haptic moment in the
-            // app — tighten the gesture so it feels deliberate, not bouncy.
-            .pressEffect(scale: 0.96, lift: 1)
-            .disabled(isUploading)
-            .padding(.bottom, 36)
-            .accessibilityLabel("Take a shot")
-            .accessibilityHint("Captures a photo and seals it until reveal. No retakes.")
-        }
-    }
-
-    /// Animated waveform shown above the note field while a voice note is being
-    /// recorded (or after it's been captured). Sample-only — no real audio.
-    private var voiceNoteStrip: some View {
-        HStack(spacing: 10) {
-            if isRecordingVoice {
-                PulsingDot(color: Palette.red, size: 6)
-                Text(String(format: "%0.1fs", voiceDuration))
-                    .font(.custom("Menlo", size: 11)).tracking(1)
-                    .foregroundStyle(Palette.red)
-            } else {
-                Image(systemName: "waveform")
-                    .foregroundStyle(Palette.gold)
-                Text(String(format: "voice note · %0.1fs", voiceDuration))
-                    .font(.custom("Menlo", size: 11)).tracking(1)
-                    .foregroundStyle(Palette.gold)
-            }
-            Waveform(bars: 24, isLive: isRecordingVoice, color: isRecordingVoice ? Palette.red : Palette.gold)
-                .frame(maxWidth: .infinity)
-            if !isRecordingVoice {
-                Button {
-                    voiceDuration = 0
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Discard voice note")
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.black.opacity(0.55))
-        .overlay(Capsule().stroke(
-            isRecordingVoice ? Palette.red : Palette.gold.opacity(0.5), lineWidth: 1))
-        .clipShape(Capsule())
-    }
-
-    private func toggleVoiceRecord() {
-        if isRecordingVoice {
-            voiceTimer?.invalidate()
-            voiceTimer = nil
-            isRecordingVoice = false
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-        } else {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            voiceDuration = 0
-            isRecordingVoice = true
-            voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                Task { @MainActor in
-                    voiceDuration += 0.1
-                    if voiceDuration >= 10 {  // 10s cap (matches Afterimage's ritual brevity)
-                        voiceTimer?.invalidate()
-                        voiceTimer = nil
-                        isRecordingVoice = false
+                    Color.black.opacity(0.85)
+                    VStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 36))
+                            .foregroundStyle(Palette.gold)
+                        Text("film contributed")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Palette.gold)
+                        Text("sealed until sunrise")
+                            .font(.system(size: 11)).italic()
+                            .foregroundStyle(Palette.textTertiary)
                     }
                 }
+                .transition(.opacity)
+                // Don't swallow taps — the shutter is already re-armed.
+                .allowsHitTesting(false)
             }
         }
+        .frame(width: box.width - 4 * s, height: box.height - 4 * s)
+        .clipShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
+        .onTapGesture { location in
+            handleTap(location, boxSize: CGSize(width: box.width, height: box.height))
+        }
+        .position(x: box.midX, y: box.midY)
     }
 
-    private func handleTap(_ location: CGPoint) {
-        guard !noteFieldFocus else {
-            noteFieldFocus = false
-            return
+    // MARK: A physical control on the shell — an invisible circular hit target
+    // mapped to the artwork, with an optional state decoration on top.
+
+    private func shellButton<Decoration: View>(
+        center: CGPoint, radius: CGFloat, scale s: CGFloat, originX: CGFloat,
+        label: String, hint: String,
+        action: @escaping () -> Void,
+        @ViewBuilder decoration: () -> Decoration
+    ) -> some View {
+        Button(action: action) {
+            Circle()
+                .fill(Color.white.opacity(0.001))   // invisible but tappable
+                .overlay(decoration())
+                .frame(width: radius * 2 * s, height: radius * 2 * s)
         }
-        camera.focus(atNormalized: location, screenSize: UIScreen.main.bounds.size)
+        .buttonStyle(.plain)
+        .pressEffect(scale: 0.96, lift: 1)
+        .position(x: originX + center.x * s, y: center.y * s)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint)
+    }
+
+    private func handleTap(_ location: CGPoint, boxSize: CGSize) {
+        camera.focus(atNormalized: location, screenSize: boxSize)
         // Per Emil: never ease-in on UI elements — ease-in delays movement at
         // the moment the user is watching most closely, making it feel sluggish.
-        // Both enter AND exit of the focus indicator use Motion.crisp (200ms
-        // strong ease-out).
         withAnimation(Motion.crisp) {
             focusIndicator = location
         }
@@ -306,9 +266,11 @@ struct CameraView: View {
     }
 
     private func capture() {
-        guard !isUploading, let albumId = album.id else { return }
+        guard !isUploading, let albumId = album.id, let uid = auth.uid else { return }
         isUploading = true
-        let capturedNote = note
+        // Only the FIRST shot of a roll stamps GPS (read now, on the main actor,
+        // before the work hops to the background).
+        let isFirstShot = shotService.myShotCount == 0
         UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         withAnimation(.linear(duration: 0.06)) { flashFlash = true }
         Task {
@@ -317,47 +279,57 @@ struct CameraView: View {
                 flashFlash = false
                 blackOut = true
             }
-            // Hold blackout for ~500ms — the frame is gone forever.
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            // Brief black-out — the "frame is gone" beat. Kept short so the next
+            // shot is available almost immediately.
+            try? await Task.sleep(nanoseconds: 320_000_000)
 
-            if album.isSample {
-                // Demo path — no Firebase. Append a session shot the album detail will pick up.
-                SampleSessionShots.shared.add(
-                    albumId: albumId, note: capturedNote, userId: "me"
-                )
-                note = ""
-                withAnimation(Motion.crisp) { blackOut = false }
-                withAnimation { showConfirmation = true }
-                try? await Task.sleep(nanoseconds: 1_100_000_000)
-                withAnimation { showConfirmation = false }
-                toast.success("added to the roll")
-            } else if let uid = auth.uid {
-                // Real (signed-in) path
-                do {
-                    if let image = try await camera.capturePhoto() {
-                        try await shotService.upload(
-                            image: image,
-                            albumId: albumId,
-                            userId: uid,
-                            note: capturedNote
-                        )
-                        note = ""
-                        withAnimation(Motion.crisp) { blackOut = false }
-                        withAnimation { showConfirmation = true }
-                        try? await Task.sleep(nanoseconds: 1_100_000_000)
-                        withAnimation { showConfirmation = false }
-                        toast.success("added to the roll")
-                    } else {
-                        withAnimation { blackOut = false }
-                    }
-                } catch {
-                    withAnimation { blackOut = false }
-                    toast.error("upload failed — try again")
-                }
-            } else {
-                withAnimation { blackOut = false }
-            }
+            // Capture + crop to exactly what the viewfinder framed — the white
+            // screen box's aspect, not the phone screen's.
+            let boxAspect = Shell.screen.width / Shell.screen.height
+            let captured = try? await camera.capturePhoto(cropAspect: boxAspect)
+
+            // Re-arm the shutter the INSTANT the frame is in hand. The upload
+            // (location + storage + Firestore) runs in the background below and
+            // never gates the next shot — shoot as fast as you can tap.
+            withAnimation(Motion.crisp) { blackOut = false }
             isUploading = false
+
+            guard let image = captured else {
+                toast.error("couldn't capture that frame")
+                return
+            }
+
+            // Light, non-blocking confirmation flourish (does not block tapping
+            // the shutter again — see `.allowsHitTesting(false)` on the overlay).
+            withAnimation { showConfirmation = true }
+            Task {
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                withAnimation { showConfirmation = false }
+            }
+
+            // Background upload. Each shot uploads independently; rapid-fire
+            // shots simply enqueue more concurrent uploads.
+            Task {
+                var place: (latitude: Double, longitude: Double, name: String?)?
+                if isFirstShot {
+                    place = await LocationService.shared.currentPlace()
+                }
+                do {
+                    try await shotService.upload(
+                        image: image,
+                        albumId: albumId,
+                        userId: uid,
+                        note: "",
+                        latitude: place?.latitude,
+                        longitude: place?.longitude,
+                        locationName: place?.name
+                    )
+                    toast.success("added to the roll")
+                } catch {
+                    toast.error(error.localizedDescription)
+                    print("📸 SHOT UPLOAD ERROR:", error)
+                }
+            }
         }
     }
 }
@@ -372,6 +344,11 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     private var captureContinuation: CheckedContinuation<UIImage?, Error>?
     private var currentInput: AVCaptureDeviceInput?
     private var flashMode: AVCaptureDevice.FlashMode = .off
+    private var isFront = false
+    /// Aspect (width ÷ height) the captured frame is center-cropped to, so the
+    /// saved photo matches exactly what the full-screen preview showed.
+    private var pendingCropAspect: CGFloat = 0
+    private var pendingMirror = false
 
     func start() async {
         guard await requestAccess() else { return }
@@ -410,6 +387,7 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
                    self.session.canAddInput(input) {
                     self.session.addInput(input)
                     self.currentInput = input
+                    self.isFront = toFront
                 }
                 self.session.commitConfiguration()
                 cont.resume()
@@ -445,16 +423,60 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
         }
     }
 
-    func capturePhoto() async throws -> UIImage? {
+    /// Capture a still and center-crop it to `cropAspect` (width ÷ height) so the
+    /// saved photo matches what the full-screen preview framed — the preview uses
+    /// `resizeAspectFill`, which hides the rest of the 4:3 sensor frame.
+    func capturePhoto(cropAspect: CGFloat) async throws -> UIImage? {
         try await withCheckedThrowingContinuation { cont in
             queue.async { [self] in
                 self.captureContinuation = cont
+                self.pendingCropAspect = cropAspect
+                self.pendingMirror = self.isFront
                 let settings = AVCapturePhotoSettings()
                 if self.output.supportedFlashModes.contains(self.flashMode) {
                     settings.flashMode = self.flashMode
                 }
                 self.output.capturePhoto(with: settings, delegate: self)
             }
+        }
+    }
+
+    /// Bakes orientation into pixels, center-crops to `aspect`, optionally mirrors
+    /// (front camera, to match the mirrored preview).
+    private func processed(_ image: UIImage, aspect: CGFloat, mirror: Bool) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = true
+
+        // 1. Normalize orientation so we can crop in display space.
+        let upright = UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+
+        // 2. Center-crop to the target aspect.
+        var result = upright
+        if aspect > 0, let cg = upright.cgImage {
+            let w = CGFloat(cg.width), h = CGFloat(cg.height)
+            let imgAspect = w / h
+            let crop: CGRect
+            if imgAspect > aspect {
+                let newW = (h * aspect).rounded()
+                crop = CGRect(x: ((w - newW) / 2).rounded(), y: 0, width: newW, height: h)
+            } else {
+                let newH = (w / aspect).rounded()
+                crop = CGRect(x: 0, y: ((h - newH) / 2).rounded(), width: w, height: newH)
+            }
+            if let cropped = cg.cropping(to: crop) {
+                result = UIImage(cgImage: cropped, scale: image.scale, orientation: .up)
+            }
+        }
+
+        // 3. Mirror front-camera shots to match the preview.
+        guard mirror else { return result }
+        return UIGraphicsImageRenderer(size: result.size, format: format).image { ctx in
+            ctx.cgContext.translateBy(x: result.size.width, y: 0)
+            ctx.cgContext.scaleBy(x: -1, y: 1)
+            result.draw(in: CGRect(origin: .zero, size: result.size))
         }
     }
 
@@ -475,6 +497,7 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
            session.canAddInput(input) {
             session.addInput(input)
             currentInput = input
+            isFront = front
         }
         if session.canAddOutput(output) {
             session.addOutput(output)
@@ -492,7 +515,8 @@ extension CameraController {
             captureContinuation?.resume(throwing: error)
         } else if let data = photo.fileDataRepresentation(),
                   let image = UIImage(data: data) {
-            captureContinuation?.resume(returning: image)
+            let cropped = processed(image, aspect: pendingCropAspect, mirror: pendingMirror)
+            captureContinuation?.resume(returning: cropped)
         } else {
             captureContinuation?.resume(returning: nil)
         }
