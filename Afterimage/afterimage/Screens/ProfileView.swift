@@ -25,7 +25,8 @@ struct ProfileView: View {
     @State private var showSettings = false
     @State private var membersSheetAlbum: Album?
     @State private var sunriseAlbum: Album?
-    @State private var detailAlbum: Album?
+    /// Developed roll opened as a full-screen slideshow — exactly like the feed.
+    @State private var slideshowAlbum: Album?
     @State private var now = Date()
     @State private var showMap = false
     @State private var showPhotoCapture = false
@@ -145,6 +146,11 @@ struct ProfileView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            // Developing rolls push the album detail — identical to the Rolls feed.
+            .navigationDestination(for: Album.self) { album in
+                AlbumDetailView(album: album)
+                    .environment(auth)
+            }
         }
         .onReceive(ticker) { now = $0 }
         .task {
@@ -172,11 +178,9 @@ struct ProfileView: View {
             ProfilePhotoCaptureView()
                 .environment(auth)
         }
-        .sheet(item: $detailAlbum) { album in
-            NavigationStack {
-                AlbumDetailView(album: album)
-                    .environment(auth)
-            }
+        .fullScreenCover(item: $slideshowAlbum) { album in
+            RollSlideshowView(album: album, shots: [])
+                .environment(auth)
         }
     }
 
@@ -361,27 +365,46 @@ struct ProfileView: View {
 
     // MARK: - Roll card — identical to the feed's film-strip post
 
-    /// Renders a roll using the exact film-strip card from the feed (`AlbumRow`).
-    /// Tapping opens the album detail (the profile is the archive/ledger).
+    /// Renders a roll using the exact film-strip card from the feed (`AlbumRow`),
+    /// and — critically — opens it EXACTLY the way the Rolls feed does: a
+    /// developing roll pushes the album detail via the NavigationStack, a
+    /// developed roll opens the full-screen slideshow. (It used to pop a modal
+    /// sheet, which read differently from the feed — the thing being fixed here.)
+    @ViewBuilder
     private func rollCard(_ album: Album, index: Int) -> some View {
-        Button {
-            UISelectionFeedbackGenerator().selectionChanged()
-            detailAlbum = album
-        } label: {
-            AlbumRow(
-                album: album, now: now, index: index,
-                onTapMembers: { membersSheetAlbum = album },
-                onPreviewSunrise: { sunriseAlbum = album },
-                // The profile's LazyVStack no longer insets the card rows, so the
-                // strip is already full-bleed — no negative breakout needed (it
-                // would overflow the screen in a lazy list).
-                sideBreakout: 0
-            )
+        Group {
+            if album.isRevealed {
+                Button {
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    slideshowAlbum = album
+                } label: {
+                    rollCardBody(album, index: index)
+                }
+                .buttonStyle(.plain)
+            } else {
+                NavigationLink(value: album) {
+                    rollCardBody(album, index: index)
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("\(album.name), \(album.isRevealed ? "developed" : "developing") roll, \(album.memberIds.count) members")
-        .accessibilityHint("Double-tap to open. Long-press for more actions.")
+        .accessibilityHint(album.isRevealed
+            ? "Double-tap to play the slideshow. Long-press for more actions."
+            : "Double-tap to open the roll. Long-press for more actions.")
         .contextMenu { rollContextMenu(album: album) }
+    }
+
+    private func rollCardBody(_ album: Album, index: Int) -> some View {
+        AlbumRow(
+            album: album, now: now, index: index,
+            onTapMembers: { membersSheetAlbum = album },
+            onPreviewSunrise: { sunriseAlbum = album },
+            // The profile's LazyVStack no longer insets the card rows, so the
+            // strip is already full-bleed — no negative breakout needed (it
+            // would overflow the screen in a lazy list).
+            sideBreakout: 0
+        )
     }
 
     // MARK: - Ledger dividers + horizontal lines

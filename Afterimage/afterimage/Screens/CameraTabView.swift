@@ -29,9 +29,9 @@ struct CameraTabView: View {
             Palette.background.ignoresSafeArea()
 
             if let album = defaultAlbum {
-                // The live camera, always open. The shell artwork lays itself
-                // out inside the safe area (top-anchored), so it clears the
-                // status bar and the compact tab bar without any manual insets.
+                // The live camera, always open. The shell artwork runs under
+                // the status bar (top edge flush with the top of the screen)
+                // and stops above the compact tab bar.
                 CameraView(album: album)
                     .environment(auth)
             } else {

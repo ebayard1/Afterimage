@@ -20,9 +20,13 @@ enum FilmStripMetrics {
     /// Number of frames shown per strip. 4 wide frames (per the redesign) — the
     /// frames are flex, so fewer frames simply widen to fill the row.
     static let frameCount = 4
-    /// Gap between frames. Set to 0 so the photos sit flush against each other
-    /// with no black rebate between them (per user request — fill the row).
-    static let frameSpacing: CGFloat = 0
+    /// Gap between frames. A thin black rebate so each photo reads as its own
+    /// framed negative separated by a slim black divider (the strip background
+    /// is black, so the gap simply shows through as a divider).
+    static let frameSpacing: CGFloat = 6
+    /// Corner radius applied to each photo frame — a subtle round so the frames
+    /// read as individual negatives rather than a flush contact sheet.
+    static let frameCornerRadius: CGFloat = 6
     /// Width ÷ height of a single frame. 0.54 ≈ a tall portrait negative —
     /// taller than a 2:3/3:4 photo so each frame reads as a tall photo.
     static let frameAspect: CGFloat = 0.54
@@ -331,7 +335,8 @@ struct FilmStripSection<Cell: View>: View {
             ForEach(0...(frameCount + 1), id: \.self) { slot in
                 frameCell(globalIndex: base + slot, n: n)
                     .frame(width: frameW, height: frameH)
-                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: FilmStripMetrics.frameCornerRadius,
+                                                style: .continuous))
             }
         }
         .frame(height: frameH)
@@ -404,14 +409,13 @@ struct FilmStripSection<Cell: View>: View {
         .frame(width: frameW, height: numberBandHeight, alignment: .leading)
     }
 
-    /// Whether this frame column prints a barcode beside its number. Every third
-    /// frame carries one — with `frameCount` (4) columns visible at a time, a
-    /// window of that width always contains exactly one or two multiples of
-    /// three, so each edge shows a steady 1–2 barcodes in frame, never zero and
-    /// never a cluster. The bottom edge is offset by one column so its barcodes
+    /// Whether this frame column prints a barcode beside its number. Every sixth
+    /// frame carries one — with `frameCount` (4) columns visible at a time, each
+    /// edge shows at most one barcode in frame, sometimes none, keeping the
+    /// print sparse. The bottom edge is offset by three columns so its barcodes
     /// are STAGGERED against the top edge's instead of stacking.
     private func showsBarcode(globalIndex: Int, edgePhase: Int) -> Bool {
-        (((globalIndex + edgePhase) % 3) + 3) % 3 == 0
+        (((globalIndex + edgePhase * 3) % 6) + 6) % 6 == 0
     }
 
     /// Kodak-style alternating frame numbering: N, (N+1)A, N+2, (N+3)A …

@@ -67,6 +67,8 @@ struct AlbumDetailView: View {
             CameraView(album: album, showsCloseButton: true)
                 .environment(auth)
                 .environment(toast)
+                // Camera mode hides the status bar here too, matching the tab.
+                .statusBarHidden(true)
         }
         .fullScreenCover(item: Binding(
             get: { selectedShotIndex.map { IndexBox(value: $0) } },
