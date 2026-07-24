@@ -47,6 +47,14 @@ struct CameraView: View {
     @State private var isPressingShutter = false
     @State private var recordStart: Date?
     @State private var recordHoldWork: DispatchWorkItem?
+    /// Optimistic floor for the frame counter: bumped the INSTANT a shot is
+    /// taken, so the badge ticks immediately instead of waiting for the
+    /// upload + Firestore listener round-trip. Rolled back if an upload
+    /// fails; the live listener count wins whenever it catches up.
+    @State private var optimisticShotCount = 0
+
+    /// What the counter badge shows — never behind the local action.
+    private var displayedShotCount: Int { max(shotService.myShotCount, optimisticShotCount) }
 
     init(album: Album, showsCloseButton: Bool = false) {
         self.album = album
@@ -56,6 +64,12 @@ struct CameraView: View {
     /// Shots each member gets per roll — the "24 exposures" of the disposable.
     private let rollCapacity = 24
 
+    /// DEBUG calibration overlay: draws crosshair + reference rings at the
+    /// Shell map's button coordinates (ring pitch 4 shell px) so the baked
+    /// buttons' true centers/diameters can be read off a live screen capture.
+    /// MUST be false for normal use.
+    static let showAlignmentJig = false
+
     // MARK: Shell map — everything in the 904×1740 pixel space of the
     // `CameraShell` asset. Measured off the artwork itself. This art is
     // full-bleed (content reaches all four edges — no transparent margin),
@@ -64,14 +78,29 @@ struct CameraView: View {
         static let size = CGSize(width: 904, height: 1740)
         /// The white screen cutout the viewfinder lives in.
         static let screen = CGRect(x: 241, y: 368, width: 446, height: 769)
-        static let flashCenter = CGPoint(x: 645, y: 154)
-        static let flipCenter = CGPoint(x: 789, y: 154)
-        static let controlRadius: CGFloat = 62
-        static let shutterCenter = CGPoint(x: 451, y: 1507)
-        static let shutterRadius: CGFloat = 115
-        /// Rendered diameter of the flash / flip button OVERLAYS, in shell-space
-        /// px — sized to cover the baked-in buttons. Tune if they look off.
-        static let controlButtonDiameter: CGFloat = 150
+        // Button geometry below was circle-fitted to the baked-in buttons'
+        // rim rings in the artwork (and verified visually against overlay
+        // renders) — centers are the rings' centers, diameters span the full
+        // button including its bezel, so the sliced button art drops exactly
+        // on top of the printed button.
+        // Diameters calibrated on-device with the DEBUG alignment jig
+        // (see showAlignmentJig): the jig's reference rings were compared to
+        // the baked buttons on a live screen capture.
+        // Sized/positioned to fully COVER the baked buttons including their
+        // bottom drop-shadow skirts (art-vs-art shading differs, so the
+        // overlay must swallow the printed button entirely or the baked art
+        // peeks out below). Calibrated against live device captures.
+        static let flashCenter = CGPoint(x: 649, y: 162)
+        static let flashDiameter: CGFloat = 136
+        // Flip shows the baked button at rest (press reveals the sliced art
+        // scaled down), so its center is the BAKED button's ring-fit center.
+        static let flipCenter = CGPoint(x: 781, y: 146)
+        static let flipDiameter: CGFloat = 112
+        static let controlRadius: CGFloat = 62          // hit-target radius
+        static let shutterCenter = CGPoint(x: 465, y: 1505)
+        static let shutterRadius: CGFloat = 126         // hit target: full ring stack
+        /// RecordFace overlay: covers the shutter face + inner rings.
+        static let recordFaceDiameter: CGFloat = 224
     }
 
     var body: some View {
@@ -105,23 +134,40 @@ struct CameraView: View {
                 // sealed confirmation) happens INSIDE this box, never outside.
                 viewfinder(box: box, scale: s)
 
+                // DEBUG alignment jig — draws calibration rings at the Shell
+                // map coordinates so the baked buttons' true positions can be
+                // read off a live screen capture. Ring pitch = 4 shell px.
+                #if DEBUG
+                if Self.showAlignmentJig {
+                    alignmentJig(scale: s, originX: originX)
+                }
+                #endif
+
                 // 3. Physical controls — the sliced button art overlaid on the
                 //    shell so they can animate. Flash swaps its glyph on/off; a
-                //    white ring pops up while a control is pressed.
-                controlButton(image: flashOn ? "FlashOn" : "FlashOff",
-                              center: Shell.flashCenter, scale: s, originX: originX,
-                              label: flashOn ? "Flash on" : "Flash off",
-                              hint: "Toggles the camera flash") {
-                    flashOn.toggle()
-                    camera.setFlash(flashOn ? .on : .off)
-                }
+                //    white ring pops up while a control is pressed. (Hidden
+                //    while the alignment jig is on so the baked buttons show.)
+                if !Self.showAlignmentJig {
+                    controlButton(image: flashOn ? "FlashOn" : "FlashOff",
+                                  center: Shell.flashCenter, diameter: Shell.flashDiameter,
+                                  scale: s, originX: originX,
+                                  label: flashOn ? "Flash on" : "Flash off",
+                                  hint: "Toggles the camera flash") {
+                        flashOn.toggle()
+                        camera.setFlash(flashOn ? .on : .off)
+                    }
 
-                controlButton(image: "FlipButton",
-                              center: Shell.flipCenter, scale: s, originX: originX,
-                              label: usingFront ? "Switch to rear camera" : "Switch to front camera",
-                              hint: "Flips between front and rear cameras") {
-                    usingFront.toggle()
-                    Task { await camera.flip(toFront: usingFront) }
+                    // Flip: the BAKED button is the resting look; while the
+                    // thumb is down, the sliced FlipButton art appears SCALED
+                    // DOWN — the art itself is the "pressed in" state.
+                    pressRevealButton(image: "FlipButton",
+                                      center: Shell.flipCenter, diameter: Shell.flipDiameter,
+                                      scale: s, originX: originX,
+                                      label: usingFront ? "Switch to rear camera" : "Switch to front camera",
+                                      hint: "Flips between front and rear cameras") {
+                        usingFront.toggle()
+                        Task { await camera.flip(toFront: usingFront) }
+                    }
                 }
 
                 // Shutter: tap = photo · press-and-hold = record video. The red
@@ -173,7 +219,7 @@ struct CameraView: View {
         .onDisappear { camera.stop() }
     }
 
-    private var remainingShots: Int { max(0, rollCapacity - shotService.myShotCount) }
+    private var remainingShots: Int { max(0, rollCapacity - displayedShotCount) }
 
     // MARK: Top-left chrome — the frame counter in a small rounded black
     // badge, plus the close button when presented as a full-screen cover.
@@ -182,7 +228,7 @@ struct CameraView: View {
     private let counterGreen = Color(red: 0.36, green: 0.96, blue: 0.46)
 
     private var counterBadge: some View {
-        Text("\(shotService.myShotCount)/\(rollCapacity)")
+        Text("\(displayedShotCount)/\(rollCapacity)")
             .font(.custom("Menlo", size: 28).weight(.bold))
             .tracking(2)
             .foregroundStyle(counterGreen)
@@ -192,7 +238,7 @@ struct CameraView: View {
             .shadow(color: counterGreen.opacity(0.55), radius: 15)
             .padding(.horizontal, 16).padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.black))
-            .accessibilityLabel("\(shotService.myShotCount) of \(rollCapacity) shots taken on this roll")
+            .accessibilityLabel("\(displayedShotCount) of \(rollCapacity) shots taken on this roll")
     }
 
     private var closeButton: some View {
@@ -266,11 +312,35 @@ struct CameraView: View {
     // MARK: A physical control on the shell — the sliced button art overlaid on
     // the baked-in button, with a white "pop" ring while pressed.
 
-    private func controlButton(
-        image: String, center: CGPoint, scale s: CGFloat, originX: CGFloat,
+    /// A control whose RESTING look is the baked-in button on the shell art.
+    /// While pressed, the sliced button art appears scaled DOWN — the art is
+    /// the "pressed in" state. (Everything anchors to the label's fixed frame;
+    /// never put a flexible shape in the style — one once inflated the hit
+    /// area to the whole screen.)
+    private func pressRevealButton(
+        image: String, center: CGPoint, diameter: CGFloat,
+        scale s: CGFloat, originX: CGFloat,
         label: String, hint: String, action: @escaping () -> Void
     ) -> some View {
-        let d = Shell.controlButtonDiameter * s
+        let d = diameter * s
+        return Button(action: action) {
+            Image(image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: d, height: d)
+        }
+        .buttonStyle(PressRevealButtonStyle())
+        .position(x: originX + center.x * s, y: center.y * s)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint)
+    }
+
+    private func controlButton(
+        image: String, center: CGPoint, diameter: CGFloat,
+        scale s: CGFloat, originX: CGFloat,
+        label: String, hint: String, action: @escaping () -> Void
+    ) -> some View {
+        let d = diameter * s
         return Button(action: action) {
             Image(image)
                 .resizable()
@@ -283,22 +353,66 @@ struct CameraView: View {
         .accessibilityHint(hint)
     }
 
+    #if DEBUG
+    // MARK: Alignment jig (DEBUG) — crosshairs + rings every 4 shell px.
+
+    @ViewBuilder
+    private func alignmentJig(scale s: CGFloat, originX: CGFloat) -> some View {
+        jigTarget(center: Shell.flashCenter, baseDiameter: Shell.flashDiameter,
+                  color: .red, scale: s, originX: originX)
+        jigTarget(center: Shell.flipCenter, baseDiameter: Shell.flipDiameter,
+                  color: .green, scale: s, originX: originX)
+        jigTarget(center: Shell.shutterCenter, baseDiameter: Shell.recordFaceDiameter,
+                  color: .cyan, scale: s, originX: originX)
+    }
+
+    private func jigTarget(center: CGPoint, baseDiameter: CGFloat, color: Color,
+                           scale s: CGFloat, originX: CGFloat) -> some View {
+        ZStack {
+            // Reference rings at base radius −8…+8 shell px, pitch 4. The base
+            // ring is drawn heavier so it's unambiguous in a capture.
+            ForEach([-8, -4, 0, 4, 8], id: \.self) { off in
+                Circle()
+                    .stroke(color.opacity(off == 0 ? 1.0 : 0.55),
+                            lineWidth: off == 0 ? 2 : 0.7)
+                    .frame(width: (baseDiameter + CGFloat(off) * 2) * s,
+                           height: (baseDiameter + CGFloat(off) * 2) * s)
+            }
+            // Crosshair through the mapped center.
+            Rectangle().fill(color).frame(width: (baseDiameter + 40) * s, height: 1)
+            Rectangle().fill(color).frame(width: 1, height: (baseDiameter + 40) * s)
+        }
+        .position(x: originX + center.x * s, y: center.y * s)
+        .allowsHitTesting(false)
+    }
+    #endif
+
     // MARK: Shutter — tap = photo, press-and-hold = record video.
 
     private func shutterControl(scale s: CGFloat, originX: CGFloat) -> some View {
-        let d = Shell.shutterRadius * 2 * s
+        let d = Shell.shutterRadius * 2 * s              // hit target: full ring stack
+        let faceD = Shell.recordFaceDiameter * s          // red face: face + inner rings
         return ZStack {
+            // Constant invisible tap target over the baked shutter.
+            Color.white.opacity(0.001).frame(width: d, height: d)
             if isRecording {
-                // Red record face replaces the shutter's face while holding.
+                // Recording: red face full-size with the pulsing ring.
                 Image("RecordFace")
                     .resizable().scaledToFit()
+                    .frame(width: faceD, height: faceD)
+                RecordingRing(diameter: d * 1.02)
+            } else if isPressingShutter {
+                // Pressed (photo): the shutter itself pushes inward. The
+                // overlay is the shutter disc sliced from the SHELL ART, so
+                // it's pixel-identical to the baked button — red is video-only.
+                Image("ShutterFace")
+                    .resizable().scaledToFit()
                     .frame(width: d, height: d)
-                RecordingRing(diameter: d * 1.05)
-            } else {
-                // Invisible tap target over the baked shutter.
-                Color.white.opacity(0.001).frame(width: d, height: d)
+                    .scaleEffect(0.92)
             }
         }
+        .animation(.easeOut(duration: 0.1), value: isPressingShutter)
+        .animation(.easeOut(duration: 0.12), value: isRecording)
         .frame(width: d, height: d)
         .contentShape(Circle())
         .position(x: originX + Shell.shutterCenter.x * s, y: Shell.shutterCenter.y * s)
@@ -364,12 +478,15 @@ struct CameraView: View {
         withAnimation(Motion.crisp) { isRecording = false }
         recordStart = nil
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-        let wasFirst = shotService.myShotCount == 0
+        let wasFirst = displayedShotCount == 0
+        // Counter ticks immediately for videos too — rolled back on failure.
+        optimisticShotCount = displayedShotCount + 1
         isUploading = true
         Task {
             let url = await camera.stopRecording()
             isUploading = false
             guard let url else {
+                optimisticShotCount = max(0, optimisticShotCount - 1)
                 toast.error("couldn't save that video")
                 return
             }
@@ -387,6 +504,7 @@ struct CameraView: View {
                     )
                     toast.success("added to the roll")
                 } catch {
+                    optimisticShotCount = max(0, optimisticShotCount - 1)   // roll back the tick
                     toast.error(error.localizedDescription)
                     print("🎥 VIDEO UPLOAD ERROR:", error)
                 }
@@ -423,8 +541,15 @@ struct CameraView: View {
         isUploading = true
         // Only the FIRST shot of a roll stamps GPS (read now, on the main actor,
         // before the work hops to the background).
-        let isFirstShot = shotService.myShotCount == 0
-        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        let isFirstShot = displayedShotCount == 0
+        // Counter ticks the INSTANT the shutter fires — rolled back on failure.
+        optimisticShotCount = displayedShotCount + 1
+        // Camera-like haptic: a crisp mechanical click, then a lighter
+        // "film advance" clack right behind it.
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 1.0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8)
+        }
         withAnimation(.linear(duration: 0.06)) { flashFlash = true }
         Task {
             try? await Task.sleep(nanoseconds: 90_000_000)
@@ -448,6 +573,7 @@ struct CameraView: View {
             isUploading = false
 
             guard let image = captured else {
+                optimisticShotCount = max(0, optimisticShotCount - 1)   // roll back the tick
                 toast.error("couldn't capture that frame")
                 return
             }
@@ -479,11 +605,29 @@ struct CameraView: View {
                     )
                     toast.success("added to the roll")
                 } catch {
+                    optimisticShotCount = max(0, optimisticShotCount - 1)   // roll back the tick
                     toast.error(error.localizedDescription)
                     print("📸 SHOT UPLOAD ERROR:", error)
                 }
             }
         }
+    }
+}
+
+// MARK: - Press-reveal style — nothing at rest (the baked art shows through);
+// the label art appears scaled down while pressed. No ring — the smaller art
+// alone reads as the press.
+
+private struct PressRevealButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 1 : 0)
+            // Constant, label-sized invisible hit target (transparent views
+            // don't hit-test on their own).
+            .background(Circle().fill(Color.white.opacity(0.001)))
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.90 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -566,9 +710,20 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     // MARK: Video recording (press-and-hold on the shutter)
 
     /// Begin recording a movie to a temp file. Safe to call repeatedly.
+    /// Attaches the microphone for the duration of the recording only — a
+    /// permanently-hot mic pins iOS's "mic in use" pill over the island.
     func startRecording() {
         queue.async { [self] in
             guard !movieOutput.isRecording else { return }
+            if audioInput == nil,
+               let mic = AVCaptureDevice.default(for: .audio),
+               let micInput = try? AVCaptureDeviceInput(device: mic),
+               session.canAddInput(micInput) {
+                session.beginConfiguration()
+                session.addInput(micInput)
+                session.commitConfiguration()
+                audioInput = micInput
+            }
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
@@ -578,6 +733,16 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
             }
             movieOutput.startRecording(to: url, recordingDelegate: self)
         }
+    }
+
+    /// Detach the microphone once a recording ends, dismissing the system's
+    /// mic-in-use indicator. Runs on the session queue.
+    private func detachAudio() {
+        guard let micInput = audioInput else { return }
+        session.beginConfiguration()
+        session.removeInput(micInput)
+        session.commitConfiguration()
+        audioInput = nil
     }
 
     /// Stop recording and return the finished .mov URL (nil if not recording or
@@ -746,13 +911,11 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
             currentInput = input
             isFront = front
         }
-        // Audio input so videos have sound (best-effort — skipped if denied).
-        if let mic = AVCaptureDevice.default(for: .audio),
-           let micInput = try? AVCaptureDeviceInput(device: mic),
-           session.canAddInput(micInput) {
-            session.addInput(micInput)
-            audioInput = micInput
-        }
+        // NOTE: the microphone is deliberately NOT attached here. A hot mic
+        // makes iOS pin the expanded "mic in use" pill over the Dynamic
+        // Island the whole time the camera page is open. The audio input is
+        // attached only for the duration of a video recording (see
+        // startRecording / detachAudio).
         if session.canAddOutput(output) {
             session.addOutput(output)
         }
@@ -770,6 +933,7 @@ extension CameraController {
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
         queue.async { [self] in
+            detachAudio()   // drop the mic-in-use indicator as soon as we stop
             let cont = recordContinuation
             recordContinuation = nil
             if let error {

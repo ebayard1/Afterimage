@@ -15,6 +15,13 @@ struct MainTabView: View {
     var body: some View {
         GeometryReader { geo in
             let topInset = geo.safeAreaInsets.top
+            // The camera shell is width-fit and top-anchored, so its bottom
+            // edge lands at width × (1740/904). Size the tab bar to fill the
+            // whole zone from the shell's bottom edge to the home-indicator
+            // area — the menu "touches" the camera on every device width.
+            let fullHeight = geo.size.height + topInset + geo.safeAreaInsets.bottom
+            let shellBottom = geo.size.width * (1740.0 / 904.0)
+            let barHeight = max(56, fullHeight - shellBottom - geo.safeAreaInsets.bottom)
             TabView(selection: $selectedTab) {
                 HomeView()
                     .safeAreaPadding(.top, topInset)
@@ -35,7 +42,7 @@ struct MainTabView: View {
             // exactly as before; only the camera actually goes under the island.
             .ignoresSafeArea(edges: .top)
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            .safeAreaInset(edge: .bottom, spacing: 0) { compactBar }
+            .safeAreaInset(edge: .bottom, spacing: 0) { compactBar(height: barHeight) }
             // On the camera page the whole screen IS the device — hide the
             // system status bar (clock / battery / signal) so nothing floats
             // over the shell. Rolls and Profile keep it.
@@ -51,24 +58,19 @@ struct MainTabView: View {
     // Pulled DOWN into the home-indicator margin so it clears the (zoomed) shell
     // artwork — the glass then floats over the background, not over the leather.
 
-    private var compactBar: some View {
-        // Liquid Glass must live inside a GlassEffectContainer to composite
-        // reliably — a bare `.glassEffect` (especially `.interactive()`) can
-        // fall back to a flat, opaque pill, which is why the bar read as "no
-        // glass." The container also lets the capsule pick up and refract the
-        // content that scrolls beneath it.
-        GlassEffectContainer(spacing: 0) {
-            HStack {
-                barButton(.rolls, icon: "film.stack.fill", label: "Rolls")
-                barButton(.camera, icon: "camera.fill", label: "Camera")
-                barButton(.profile, icon: "person.crop.circle.fill", label: "Profile")
-            }
-            .frame(height: 44)
-            .frame(maxWidth: .infinity)
-            .glassEffect(.regular.interactive(), in: .capsule)
+    private func compactBar(height: CGFloat) -> some View {
+        // Bare floating icons — no glass, no pill. Over the app's near-black
+        // surfaces the glass capsule just read as a flat grey rectangle, so
+        // the bar is now only the three icons. The height is computed by the
+        // caller so the bar's top edge meets the camera shell's bottom edge.
+        HStack {
+            barButton(.rolls, icon: "film.stack.fill", label: "Rolls")
+            barButton(.camera, icon: "camera.fill", label: "Camera")
+            barButton(.profile, icon: "person.crop.circle.fill", label: "Profile")
         }
+        .frame(height: height)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 64)
-        .padding(.bottom, -24)
     }
 
     private func barButton(_ tab: Tab, icon: String, label: String) -> some View {
@@ -76,7 +78,7 @@ struct MainTabView: View {
             withAnimation(Motion.crisp) { selectedTab = tab }
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(selectedTab == tab ? Palette.gold : Palette.textTertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())

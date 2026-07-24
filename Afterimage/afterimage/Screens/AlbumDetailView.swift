@@ -65,6 +65,8 @@ struct AlbumDetailView: View {
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraView(album: album, showsCloseButton: true)
+                // Pure black behind the shell, matching the camera tab.
+                .background(Color.black.ignoresSafeArea())
                 .environment(auth)
                 .environment(toast)
                 // Camera mode hides the status bar here too, matching the tab.

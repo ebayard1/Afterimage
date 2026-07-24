@@ -26,7 +26,10 @@ struct CameraTabView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Palette.background.ignoresSafeArea()
+            // PURE black, not Palette.background — the warm dark reads as a
+            // grey panel where it shows below the shell art; pure black lets
+            // the area under the shell vanish the same way the top does.
+            Color.black.ignoresSafeArea()
 
             if let album = defaultAlbum {
                 // The live camera, always open. The shell artwork runs under
