@@ -95,6 +95,68 @@ final class ShotService {
         }
     }
 
+    /// Upload a video shot: the .mov file plus its poster still. `photoURL` on
+    /// the resulting Shot holds the poster (so thumbnails never autoplay);
+    /// `videoURL` holds the movie, played only when tapped into full screen.
+    func uploadVideo(
+        fileURL: URL,
+        poster: UIImage,
+        albumId: String,
+        userId: String,
+        note: String?,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        locationName: String? = nil
+    ) async throws {
+        guard let posterData = poster.jpegData(compressionQuality: 0.85) else {
+            throw NSError(domain: "ShotService", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Couldn't encode poster"])
+        }
+        let shotId = UUID().uuidString
+        let posterRef = storage.reference(withPath: "albums/\(albumId)/shots/\(shotId).jpg")
+        let videoRef = storage.reference(withPath: "albums/\(albumId)/shots/\(shotId).mov")
+        let posterMeta = StorageMetadata(); posterMeta.contentType = "image/jpeg"
+        let videoMeta = StorageMetadata(); videoMeta.contentType = "video/quicktime"
+
+        let posterURL: String
+        let videoURL: String
+        do {
+            _ = try await posterRef.putDataAsync(posterData, metadata: posterMeta)
+            posterURL = try await posterRef.downloadURL().absoluteString
+            _ = try await videoRef.putFileAsync(from: fileURL, metadata: videoMeta)
+            videoURL = try await videoRef.downloadURL().absoluteString
+        } catch {
+            throw NSError(domain: "ShotService", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "storage upload failed: \(error.localizedDescription)"
+            ])
+        }
+
+        let cleanedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shot = Shot(
+            id: shotId,
+            userId: userId,
+            photoURL: posterURL,
+            videoURL: videoURL,
+            createdAt: Date(),
+            note: (cleanedNote?.isEmpty ?? true) ? nil : cleanedNote,
+            reactions: nil,
+            latitude: latitude,
+            longitude: longitude,
+            locationName: locationName
+        )
+        do {
+            try await db.collection("albums").document(albumId)
+                .collection("shots").document(shotId)
+                .setData(from: shot)
+        } catch {
+            throw NSError(domain: "ShotService", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "saving shot failed: \(error.localizedDescription)"
+            ])
+        }
+        // Clean up the temp recording now it's safely uploaded.
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     func toggleReaction(shotId: String, albumId: String, userId: String, emoji: String) async throws {
         let ref = db.collection("albums").document(albumId)
             .collection("shots").document(shotId)

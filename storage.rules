@@ -12,11 +12,15 @@ service firebase.storage {
       return request.resource.contentType.matches('image/.*')
              && request.resource.size < 12 * 1024 * 1024; // 12 MB
     }
+    function isVideo() {
+      return request.resource.contentType.matches('video/.*')
+             && request.resource.size < 200 * 1024 * 1024; // 200 MB
+    }
 
-    // Roll shots.
+    // Roll shots — images (photos + video posters) and videos.
     match /albums/{albumId}/shots/{fileName} {
       allow read: if signedIn();
-      allow write: if signedIn() && isImage();
+      allow write: if signedIn() && (isImage() || isVideo());
     }
 
     // User avatars — you may only write your own.

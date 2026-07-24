@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 /// Full-screen, Snapchat-recap-style slideshow for a revealed roll.
 ///
@@ -64,10 +65,19 @@ struct RollSlideshowView: View {
                     SlideshowPhoto(url: prevURL, progress: 1.0)
                         .ignoresSafeArea()
                 }
-                if let shot = currentShot, let url = URL(string: shot.photoURL) {
-                    SlideshowPhoto(url: url, progress: progress)
-                        .ignoresSafeArea()
-                        .opacity(frontOpacity)
+                if let shot = currentShot {
+                    if shot.isVideo, let vurl = URL(string: shot.videoURL ?? "") {
+                        // A video plays here (this IS "pressing on the hero"),
+                        // and advances the slideshow when it finishes.
+                        SlideshowVideo(url: vurl) { goNext() }
+                            .id(index)
+                            .ignoresSafeArea()
+                            .opacity(frontOpacity)
+                    } else if let url = URL(string: shot.photoURL) {
+                        SlideshowPhoto(url: url, progress: progress)
+                            .ignoresSafeArea()
+                            .opacity(frontOpacity)
+                    }
                 }
 
                 LinearGradient(colors: [.black.opacity(0.5), .clear, .black.opacity(0.85)],
@@ -330,6 +340,7 @@ struct RollSlideshowView: View {
             Task { @MainActor in
                 if isPaused { return }            // press-and-hold freezes progress
                 if shots.isEmpty { return }       // real mode: still loading
+                if currentShot?.isVideo == true { return }   // video drives its own advance
                 progress += 0.05 / cue(forIndex: index)
                 if progress >= 1.0 {
                     if index >= shots.count - 1 {
@@ -345,6 +356,50 @@ struct RollSlideshowView: View {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+    }
+}
+
+// MARK: - Slideshow video — autoplays the current frame, advances when done
+
+private struct SlideshowVideo: View {
+    let url: URL
+    let onFinished: () -> Void
+
+    @State private var player = AVPlayer()
+    @State private var endObserver: NSObjectProtocol?
+
+    var body: some View {
+        PlayerLayerView(player: player)
+            .onAppear {
+                let item = AVPlayerItem(url: url)
+                endObserver = NotificationCenter.default.addObserver(
+                    forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+                ) { _ in onFinished() }
+                player.replaceCurrentItem(with: item)
+                player.play()
+            }
+            .onDisappear {
+                player.pause()
+                if let o = endObserver { NotificationCenter.default.removeObserver(o) }
+            }
+    }
+}
+
+/// Thin AVPlayerLayer wrapper — fills the screen, no system controls.
+private struct PlayerLayerView: UIViewRepresentable {
+    let player: AVPlayer
+    func makeUIView(context: Context) -> PlayerUIView {
+        let v = PlayerUIView()
+        v.playerLayer.player = player
+        v.playerLayer.videoGravity = .resizeAspectFill
+        return v
+    }
+    func updateUIView(_ uiView: PlayerUIView, context: Context) {
+        uiView.playerLayer.player = player
+    }
+    final class PlayerUIView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }
 

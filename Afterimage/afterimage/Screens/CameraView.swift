@@ -16,8 +16,8 @@ import UIKit
 //   • the big bottom circle     → the shutter
 //   • the red LED               → decorative power light on the shell art
 //
-// A Menlo frame counter (taken/total, e.g. 13/24) is printed on the leather
-// between the screen and the shutter. One roll at a time — no roll selector.
+// A Menlo frame counter (taken/total, e.g. 13/24) sits in the top-left corner
+// in a small rounded black badge. One roll at a time — no roll selector.
 //
 // All hit-targets and the screen rect are mapped in the shell image's own
 // pixel space and scaled with it, so the layout is exact at every size.
@@ -42,6 +42,11 @@ struct CameraView: View {
     @State private var showCameraCoach = false
     @State private var flashFlash = false
     @State private var blackOut = false
+    // Video mode — press-and-hold the shutter (Snapchat-style).
+    @State private var isRecording = false
+    @State private var isPressingShutter = false
+    @State private var recordStart: Date?
+    @State private var recordHoldWork: DispatchWorkItem?
 
     init(album: Album, showsCloseButton: Bool = false) {
         self.album = album
@@ -51,27 +56,31 @@ struct CameraView: View {
     /// Shots each member gets per roll — the "24 exposures" of the disposable.
     private let rollCapacity = 24
 
-    // MARK: Shell map — everything in the 887×1774 pixel space of the
-    // `CameraShell` asset. Measured off the artwork itself.
+    // MARK: Shell map — everything in the 904×1740 pixel space of the
+    // `CameraShell` asset. Measured off the artwork itself. This art is
+    // full-bleed (content reaches all four edges — no transparent margin),
+    // so `body` fits it to the screen width with no overfill or nudge.
     private enum Shell {
-        static let size = CGSize(width: 887, height: 1774)
+        static let size = CGSize(width: 904, height: 1740)
         /// The white screen cutout the viewfinder lives in.
-        static let screen = CGRect(x: 237, y: 366, width: 441, height: 761)
-        static let flashCenter = CGPoint(x: 642, y: 153)
-        static let flipCenter = CGPoint(x: 777, y: 154)
+        static let screen = CGRect(x: 241, y: 368, width: 446, height: 769)
+        static let flashCenter = CGPoint(x: 645, y: 154)
+        static let flipCenter = CGPoint(x: 789, y: 154)
         static let controlRadius: CGFloat = 62
-        static let shutterCenter = CGPoint(x: 455, y: 1497)
-        static let shutterRadius: CGFloat = 122
-        /// Frame-counter print position (left of the red LED, on the leather).
-        static let counterCenter = CGPoint(x: 150, y: 1250)
+        static let shutterCenter = CGPoint(x: 451, y: 1507)
+        static let shutterRadius: CGFloat = 115
+        /// Rendered diameter of the flash / flip button OVERLAYS, in shell-space
+        /// px — sized to cover the baked-in buttons. Tune if they look off.
+        static let controlButtonDiameter: CGFloat = 150
     }
 
     var body: some View {
         GeometryReader { geo in
-            // Fit the shell into the available frame, TOP-anchored and centered
-            // horizontally — maximum room below for the (compact) tab bar.
-            let s = min(geo.size.width / Shell.size.width,
-                        geo.size.height / Shell.size.height)
+            // Scale the shell to the FULL screen width, TOP-anchored — its top
+            // edge touches the very top of the screen (the top safe area is
+            // ignored below) and its sides touch the screen edges. The art is
+            // full-bleed, so it fits the width exactly — no overfill, no nudge.
+            let s = geo.size.width / Shell.size.width
             let shellW = Shell.size.width * s
             let shellH = Shell.size.height * s
             let originX = (geo.size.width - shellW) / 2
@@ -96,63 +105,46 @@ struct CameraView: View {
                 // sealed confirmation) happens INSIDE this box, never outside.
                 viewfinder(box: box, scale: s)
 
-                // 3. Physical controls mapped onto the shell art.
-                shellButton(center: Shell.flashCenter, radius: Shell.controlRadius,
-                            scale: s, originX: originX,
-                            label: flashOn ? "Flash on" : "Flash off",
-                            hint: "Toggles the camera flash") {
+                // 3. Physical controls — the sliced button art overlaid on the
+                //    shell so they can animate. Flash swaps its glyph on/off; a
+                //    white ring pops up while a control is pressed.
+                controlButton(image: flashOn ? "FlashOn" : "FlashOff",
+                              center: Shell.flashCenter, scale: s, originX: originX,
+                              label: flashOn ? "Flash on" : "Flash off",
+                              hint: "Toggles the camera flash") {
                     flashOn.toggle()
                     camera.setFlash(flashOn ? .on : .off)
-                } decoration: {
-                    // Gold glow ring when the flash is armed.
-                    Circle()
-                        .stroke(Palette.gold.opacity(flashOn ? 0.9 : 0), lineWidth: 2)
-                        .shadow(color: Palette.gold.opacity(flashOn ? 0.7 : 0), radius: 6)
                 }
 
-                shellButton(center: Shell.flipCenter, radius: Shell.controlRadius,
-                            scale: s, originX: originX,
-                            label: usingFront ? "Switch to rear camera" : "Switch to front camera",
-                            hint: "Flips between front and rear cameras") {
+                controlButton(image: "FlipButton",
+                              center: Shell.flipCenter, scale: s, originX: originX,
+                              label: usingFront ? "Switch to rear camera" : "Switch to front camera",
+                              hint: "Flips between front and rear cameras") {
                     usingFront.toggle()
                     Task { await camera.flip(toFront: usingFront) }
-                } decoration: { EmptyView() }
+                }
 
-                shellButton(center: Shell.shutterCenter, radius: Shell.shutterRadius,
-                            scale: s, originX: originX,
-                            label: "Take a shot",
-                            hint: "Captures a photo and seals it until reveal. No retakes.") {
-                    capture()
-                } decoration: { EmptyView() }
-                .disabled(isUploading || remainingShots <= 0)
+                // Shutter: tap = photo · press-and-hold = record video. The red
+                // record face replaces the shutter while holding.
+                shutterControl(scale: s, originX: originX)
 
-                // 4. Frame counter, printed on the leather: taken/total.
-                Text("\(shotService.myShotCount)/\(rollCapacity)")
-                    .font(.custom("Menlo", size: 40 * s).weight(.bold))
-                    .tracking(2)
-                    .foregroundStyle(Palette.gold)
-                    .warmthFlicker(period: 4.6, floor: 0.85)
-                    .position(x: originX + Shell.counterCenter.x * s + 60 * s,
-                              y: Shell.counterCenter.y * s)
-                    .accessibilityLabel("\(shotService.myShotCount) of \(rollCapacity) shots taken on this roll")
+                // Recording timer pill, above the shutter while recording.
+                if isRecording {
+                    recordingTimer
+                        .position(x: originX + Shell.shutterCenter.x * s,
+                                  y: Shell.shutterCenter.y * s - Shell.shutterRadius * s - 24)
+                }
 
-                // 5. Close affordance for full-screen-cover presentations.
+                // Frame counter — vertically CENTRED on the flash button (its
+                // centre is Shell.flashCenter.y in shell space), pinned to the
+                // left. `.position` centres the badge on that exact line, so its
+                // middle lines up with the flash button. The ✕ (cover mode only)
+                // sits to its right on the same line.
+                counterBadge
+                    .position(x: 86, y: Shell.flashCenter.y * s)
                 if showsCloseButton {
-                    Button {
-                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-                        camera.stop()
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(9)
-                            .background(.black.opacity(0.45))
-                            .clipShape(Circle())
-                    }
-                    .pressEffect()
-                    .accessibilityLabel("Close camera")
-                    .padding(.leading, 12).padding(.top, 8)
+                    closeButton
+                        .position(x: 180, y: Shell.flashCenter.y * s)
                 }
 
                 if showCameraCoach {
@@ -164,6 +156,9 @@ struct CameraView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
+        // The shell art runs under the status bar so its top edge touches the
+        // very top of the screen.
+        .ignoresSafeArea(edges: .top)
         .task {
             await camera.start()
             if let uid = auth.uid, let albumId = album.id {
@@ -179,6 +174,43 @@ struct CameraView: View {
     }
 
     private var remainingShots: Int { max(0, rollCapacity - shotService.myShotCount) }
+
+    // MARK: Top-left chrome — the frame counter in a small rounded black
+    // badge, plus the close button when presented as a full-screen cover.
+
+    /// Phosphor green used for the frame counter and its glow.
+    private let counterGreen = Color(red: 0.36, green: 0.96, blue: 0.46)
+
+    private var counterBadge: some View {
+        Text("\(shotService.myShotCount)/\(rollCapacity)")
+            .font(.custom("Menlo", size: 28).weight(.bold))
+            .tracking(2)
+            .foregroundStyle(counterGreen)
+            .warmthFlicker(period: 4.6, floor: 0.85)
+            // Green glow — a soft double bloom radiating off the digits.
+            .shadow(color: counterGreen.opacity(0.9), radius: 7)
+            .shadow(color: counterGreen.opacity(0.55), radius: 15)
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.black))
+            .accessibilityLabel("\(shotService.myShotCount) of \(rollCapacity) shots taken on this roll")
+    }
+
+    private var closeButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            camera.stop()
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(9)
+                .background(.black.opacity(0.45))
+                .clipShape(Circle())
+        }
+        .pressEffect()
+        .accessibilityLabel("Close camera")
+    }
 
     // MARK: Viewfinder — everything visual stays inside the white box.
 
@@ -219,7 +251,10 @@ struct CameraView: View {
                 .allowsHitTesting(false)
             }
         }
-        .frame(width: box.width - 4 * s, height: box.height - 4 * s)
+        // Overfill the white screen cutout by ~5pt-of-shell on every side so the
+        // live video spills onto the black printed bezel and NO white rim (or
+        // white corner) of the cutout ever shows around the picture.
+        .frame(width: box.width + 10 * s, height: box.height + 10 * s)
         .clipShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
         .onTapGesture { location in
@@ -228,26 +263,144 @@ struct CameraView: View {
         .position(x: box.midX, y: box.midY)
     }
 
-    // MARK: A physical control on the shell — an invisible circular hit target
-    // mapped to the artwork, with an optional state decoration on top.
+    // MARK: A physical control on the shell — the sliced button art overlaid on
+    // the baked-in button, with a white "pop" ring while pressed.
 
-    private func shellButton<Decoration: View>(
-        center: CGPoint, radius: CGFloat, scale s: CGFloat, originX: CGFloat,
-        label: String, hint: String,
-        action: @escaping () -> Void,
-        @ViewBuilder decoration: () -> Decoration
+    private func controlButton(
+        image: String, center: CGPoint, scale s: CGFloat, originX: CGFloat,
+        label: String, hint: String, action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Circle()
-                .fill(Color.white.opacity(0.001))   // invisible but tappable
-                .overlay(decoration())
-                .frame(width: radius * 2 * s, height: radius * 2 * s)
+        let d = Shell.controlButtonDiameter * s
+        return Button(action: action) {
+            Image(image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: d, height: d)
         }
-        .buttonStyle(.plain)
-        .pressEffect(scale: 0.96, lift: 1)
+        .buttonStyle(ControlButtonStyle(ringDiameter: d * 1.02))
         .position(x: originX + center.x * s, y: center.y * s)
         .accessibilityLabel(label)
         .accessibilityHint(hint)
+    }
+
+    // MARK: Shutter — tap = photo, press-and-hold = record video.
+
+    private func shutterControl(scale s: CGFloat, originX: CGFloat) -> some View {
+        let d = Shell.shutterRadius * 2 * s
+        return ZStack {
+            if isRecording {
+                // Red record face replaces the shutter's face while holding.
+                Image("RecordFace")
+                    .resizable().scaledToFit()
+                    .frame(width: d, height: d)
+                RecordingRing(diameter: d * 1.05)
+            } else {
+                // Invisible tap target over the baked shutter.
+                Color.white.opacity(0.001).frame(width: d, height: d)
+            }
+        }
+        .frame(width: d, height: d)
+        .contentShape(Circle())
+        .position(x: originX + Shell.shutterCenter.x * s, y: Shell.shutterCenter.y * s)
+        .gesture(shutterGesture())
+        .accessibilityLabel(isRecording ? "Stop recording" : "Shutter")
+        .accessibilityHint("Tap to take a photo. Press and hold to record a video.")
+    }
+
+    private var recordingTimer: some View {
+        TimelineView(.periodic(from: Date(), by: 0.2)) { ctx in
+            let secs = recordStart.map { max(0, ctx.date.timeIntervalSince($0)) } ?? 0
+            HStack(spacing: 6) {
+                Circle().fill(.red).frame(width: 8, height: 8)
+                Text(Self.timeString(secs))
+                    .font(.custom("Menlo", size: 13).weight(.bold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(.black.opacity(0.6)))
+        }
+        .transition(.opacity)
+    }
+
+    private static func timeString(_ secs: TimeInterval) -> String {
+        let s = Int(secs)
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private func shutterGesture() -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                guard !isPressingShutter else { return }
+                isPressingShutter = true
+                guard !isUploading, remainingShots > 0 else { return }
+                // Hold past this threshold → start recording. A quicker release
+                // is a plain photo tap.
+                let work = DispatchWorkItem { beginRecording() }
+                recordHoldWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.32, execute: work)
+            }
+            .onEnded { _ in
+                isPressingShutter = false
+                recordHoldWork?.cancel(); recordHoldWork = nil
+                if isRecording {
+                    finishRecording()
+                } else {
+                    guard !isUploading, remainingShots > 0 else { return }
+                    capture()
+                }
+            }
+    }
+
+    private func beginRecording() {
+        guard !isRecording, !isUploading, remainingShots > 0 else { return }
+        withAnimation(Motion.crisp) { isRecording = true }
+        recordStart = Date()
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        camera.startRecording()
+    }
+
+    private func finishRecording() {
+        guard isRecording else { return }
+        withAnimation(Motion.crisp) { isRecording = false }
+        recordStart = nil
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        let wasFirst = shotService.myShotCount == 0
+        isUploading = true
+        Task {
+            let url = await camera.stopRecording()
+            isUploading = false
+            guard let url else {
+                toast.error("couldn't save that video")
+                return
+            }
+            guard let albumId = album.id, let uid = auth.uid else { return }
+            let poster = camera.posterFrame(from: url) ?? Self.blackPoster()
+            // Background upload — never blocks the next shot.
+            Task {
+                var place: (latitude: Double, longitude: Double, name: String?)?
+                if wasFirst { place = await LocationService.shared.currentPlace() }
+                do {
+                    try await shotService.uploadVideo(
+                        fileURL: url, poster: poster, albumId: albumId, userId: uid,
+                        note: "", latitude: place?.latitude, longitude: place?.longitude,
+                        locationName: place?.name
+                    )
+                    toast.success("added to the roll")
+                } catch {
+                    toast.error(error.localizedDescription)
+                    print("🎥 VIDEO UPLOAD ERROR:", error)
+                }
+            }
+        }
+    }
+
+    /// Fallback poster if first-frame extraction fails — a plain black still so
+    /// the upload still succeeds and the frame reads as an (unopened) negative.
+    private static func blackPoster() -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 108, height: 192)).image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 108, height: 192))
+        }
     }
 
     private func handleTap(_ location: CGPoint, boxSize: CGSize) {
@@ -334,11 +487,50 @@ struct CameraView: View {
     }
 }
 
+// MARK: - Control button style — a white "pop" ring while pressed
+
+private struct ControlButtonStyle: ButtonStyle {
+    let ringDiameter: CGFloat
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.90 : 1)
+            .overlay {
+                Circle()
+                    .stroke(Color.white.opacity(configuration.isPressed ? 0.95 : 0), lineWidth: 2.5)
+                    .frame(width: ringDiameter, height: ringDiameter)
+                    .shadow(color: .white.opacity(configuration.isPressed ? 0.7 : 0), radius: 6)
+            }
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Recording ring — pulsing halo around the shutter while recording
+
+private struct RecordingRing: View {
+    let diameter: CGFloat
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            let pulse = (sin(t * 4) + 1) / 2
+            Circle()
+                .stroke(Color.white.opacity(0.9), lineWidth: 3)
+                .frame(width: diameter, height: diameter)
+                .shadow(color: Color.red.opacity(0.6 + 0.4 * pulse), radius: 6 + 6 * pulse)
+                .opacity(0.75 + 0.25 * pulse)
+        }
+    }
+}
+
 // MARK: - Camera controller (AVFoundation wrapper)
 
-nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegate, @unchecked Sendable {
+nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     private let output = AVCapturePhotoOutput()
+    /// Video (movie) recording output for the press-and-hold video mode.
+    private let movieOutput = AVCaptureMovieFileOutput()
+    private var audioInput: AVCaptureDeviceInput?
+    /// Resumed when a recording finishes writing — carries the local .mov URL.
+    private var recordContinuation: CheckedContinuation<URL?, Never>?
     private let queue = DispatchQueue(label: "afterimage.camera.session")
     private var configured = false
     private var captureContinuation: CheckedContinuation<UIImage?, Error>?
@@ -352,6 +544,8 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
 
     func start() async {
         guard await requestAccess() else { return }
+        // Best-effort mic — if denied, video still records (silently).
+        _ = await requestMicAccess()
         await withCheckedContinuation { cont in
             queue.async { [self] in
                 if !configured { configureSession(front: false) }
@@ -359,6 +553,56 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
                 cont.resume()
             }
         }
+    }
+
+    private func requestMicAccess() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return true
+        case .notDetermined: return await AVCaptureDevice.requestAccess(for: .audio)
+        default: return false
+        }
+    }
+
+    // MARK: Video recording (press-and-hold on the shutter)
+
+    /// Begin recording a movie to a temp file. Safe to call repeatedly.
+    func startRecording() {
+        queue.async { [self] in
+            guard !movieOutput.isRecording else { return }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mov")
+            if let conn = movieOutput.connection(with: .video) {
+                if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
+                if conn.isVideoMirroringSupported { conn.isVideoMirrored = isFront }
+            }
+            movieOutput.startRecording(to: url, recordingDelegate: self)
+        }
+    }
+
+    /// Stop recording and return the finished .mov URL (nil if not recording or
+    /// the write failed).
+    func stopRecording() async -> URL? {
+        await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
+            queue.async { [self] in
+                guard movieOutput.isRecording else { cont.resume(returning: nil); return }
+                recordContinuation = cont
+                movieOutput.stopRecording()
+            }
+        }
+    }
+
+    var isRecording: Bool { movieOutput.isRecording }
+
+    /// Extract the first frame of a recorded movie as the poster still.
+    func posterFrame(from url: URL) -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 1080, height: 1920)
+        let t = CMTime(value: 1, timescale: 30)
+        guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     func stop() {
@@ -490,7 +734,10 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
 
     private func configureSession(front: Bool) {
         session.beginConfiguration()
-        session.sessionPreset = .photo
+        // `.high` supports BOTH photo stills and movie recording on the same
+        // session (the `.photo` preset can't add a movie output). Photo quality
+        // stays plenty for the film-strip frames.
+        session.sessionPreset = .high
         let position: AVCaptureDevice.Position = front ? .front : .back
         if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
            let input = try? AVCaptureDeviceInput(device: device),
@@ -499,8 +746,18 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
             currentInput = input
             isFront = front
         }
+        // Audio input so videos have sound (best-effort — skipped if denied).
+        if let mic = AVCaptureDevice.default(for: .audio),
+           let micInput = try? AVCaptureDeviceInput(device: mic),
+           session.canAddInput(micInput) {
+            session.addInput(micInput)
+            audioInput = micInput
+        }
         if session.canAddOutput(output) {
             session.addOutput(output)
+        }
+        if session.canAddOutput(movieOutput) {
+            session.addOutput(movieOutput)
         }
         session.commitConfiguration()
         configured = true
@@ -508,6 +765,22 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
 }
 
 extension CameraController {
+    nonisolated func fileOutput(_ output: AVCaptureFileOutput,
+                                didFinishRecordingTo outputFileURL: URL,
+                                from connections: [AVCaptureConnection],
+                                error: Error?) {
+        queue.async { [self] in
+            let cont = recordContinuation
+            recordContinuation = nil
+            if let error {
+                print("🎥 VIDEO RECORD ERROR:", error.localizedDescription)
+                cont?.resume(returning: nil)
+            } else {
+                cont?.resume(returning: outputFileURL)
+            }
+        }
+    }
+
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
                                  didFinishProcessingPhoto photo: AVCapturePhoto,
                                  error: Error?) {

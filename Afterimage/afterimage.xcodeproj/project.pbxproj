@@ -274,6 +274,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "afterimage uses your camera to capture shots for shared albums.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "afterimage uses your microphone to record sound with your videos.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "afterimage stamps a roll with where its first shot was taken, so your developed rolls show up on the map.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "afterimage saves revealed shots to your camera roll when you tap save.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -315,6 +316,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "afterimage uses your camera to capture shots for shared albums.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "afterimage uses your microphone to record sound with your videos.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "afterimage stamps a roll with where its first shot was taken, so your developed rolls show up on the map.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "afterimage saves revealed shots to your camera roll when you tap save.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

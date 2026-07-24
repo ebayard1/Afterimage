@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct PhotoViewerView: View {
     let album: Album
@@ -30,13 +31,19 @@ struct PhotoViewerView: View {
                 ForEach(Array(liveShots.enumerated()), id: \.offset) { idx, shot in
                     GeometryReader { geo in
                         ZStack {
-                            AsyncImage(url: URL(string: shot.photoURL)) { phase in
-                                switch phase {
-                                case .success(let img):
-                                    img.resizable().scaledToFit()
-                                        .frame(width: geo.size.width, height: geo.size.height)
-                                default:
-                                    ProgressView().tint(Palette.gold)
+                            if shot.isVideo, let vurl = shot.videoURL, !vurl.isEmpty {
+                                // Poster + play button; plays inline on tap.
+                                VideoFrame(posterURL: shot.photoURL, videoURL: vurl,
+                                           isActive: idx == startIndex)
+                            } else {
+                                AsyncImage(url: URL(string: shot.photoURL)) { phase in
+                                    switch phase {
+                                    case .success(let img):
+                                        img.resizable().scaledToFit()
+                                            .frame(width: geo.size.width, height: geo.size.height)
+                                    default:
+                                        ProgressView().tint(Palette.gold)
+                                    }
                                 }
                             }
                             // Caption printed on the frame — the author's note from shutter time.
@@ -203,5 +210,95 @@ struct PhotoViewerView: View {
                 .clipShape(Capsule())
         }
         .padding()
+    }
+}
+
+// MARK: - Tap-to-play video frame (poster still + play button, loops on play)
+
+private struct VideoFrame: View {
+    let posterURL: String
+    let videoURL: String
+    let isActive: Bool
+
+    @State private var playing = false
+    @State private var player = AVPlayer()
+    @State private var loopObserver: NSObjectProtocol?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                if playing {
+                    VideoLayer(player: player)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                } else {
+                    AsyncImage(url: URL(string: posterURL)) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFit()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                        default:
+                            ProgressView().tint(Palette.gold)
+                        }
+                    }
+                    Button { start() } label: {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 62))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .shadow(color: .black.opacity(0.5), radius: 8)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .onChange(of: isActive) { _, active in
+            if !active { stop() }
+        }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        guard let u = URL(string: videoURL) else { return }
+        let item = AVPlayerItem(url: u)
+        removeLoop()
+        loopObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { _ in
+            player.seek(to: .zero); player.play()   // loop
+        }
+        player.replaceCurrentItem(with: item)
+        player.play()
+        playing = true
+    }
+
+    private func stop() {
+        player.pause()
+        playing = false
+        removeLoop()
+    }
+
+    private func removeLoop() {
+        if let o = loopObserver {
+            NotificationCenter.default.removeObserver(o)
+            loopObserver = nil
+        }
+    }
+}
+
+/// Thin AVPlayerLayer wrapper — fills the frame, no system controls.
+private struct VideoLayer: UIViewRepresentable {
+    let player: AVPlayer
+    func makeUIView(context: Context) -> PlayerUIView {
+        let v = PlayerUIView()
+        v.playerLayer.player = player
+        v.playerLayer.videoGravity = .resizeAspect
+        return v
+    }
+    func updateUIView(_ uiView: PlayerUIView, context: Context) {
+        uiView.playerLayer.player = player
+    }
+    final class PlayerUIView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }
