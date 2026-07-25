@@ -145,7 +145,7 @@ struct PhotoViewerView: View {
     private var bookmarkButton: some View {
         Button {
             guard let shot = currentShot, let id = shot.id else { return }
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             savedStore.toggle(id: id, photoURL: shot.photoURL,
                               albumName: album.name)
         } label: {

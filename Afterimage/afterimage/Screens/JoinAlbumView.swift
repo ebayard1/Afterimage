@@ -124,18 +124,18 @@ struct JoinAlbumView: View {
             do {
                 guard let albumId = try await albumService.resolveInvite(code: trimmed) else {
                     errorMessage = "no roll found for that code"
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    Haptics.notify(.error)
                     isLoading = false
                     return
                 }
                 try await albumService.join(albumId: albumId, userId: uid)
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                Haptics.notify(.success)
                 toast.success("joined the roll")
                 isLoading = false
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                Haptics.notify(.error)
                 isLoading = false
             }
         }

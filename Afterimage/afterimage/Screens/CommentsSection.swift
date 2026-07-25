@@ -263,9 +263,7 @@ private struct CommentRow: View {
         if secs < 3600      { return "\(Int(secs / 60))m" }
         if secs < 86400     { return "\(Int(secs / 3600))h" }
         if secs < 604800    { return "\(Int(secs / 86400))d" }
-        let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        return f.string(from: comment.createdAt)
+        return Formatters.commentDayStamp.string(from: comment.createdAt)
     }
 }
 

@@ -34,6 +34,28 @@ final class ShotService {
         myShotCount = 0
     }
 
+    /// Quality every image this app uploads is encoded at.
+    ///
+    /// 0.8, paired with the 2048 px long-edge cap baked in by
+    /// `CameraController.processed` (see `maxUploadPixels` there). Together they
+    /// put a shot on Storage at roughly 400–800 KB instead of 3–5 MB. The
+    /// 0.85 → 0.8 step is ~20% fewer bytes for a difference no one can see at
+    /// the sizes this app renders (700 px in the film strip, ≤2600 px full
+    /// screen), and fewer bytes means a faster upload and less radio-on time —
+    /// which is heat. Deliberate ceiling: don't raise it without a surface that
+    /// actually needs more.
+    nonisolated static let jpegQuality: CGFloat = 0.8
+
+    /// Encode off the main actor. This class is `@MainActor`, so `jpegData` ran
+    /// on the main thread — a multi-megapixel encode landing right after the
+    /// shutter, while the black-out is fading out and the user may already be
+    /// tapping for the next frame.
+    nonisolated private static func encodeJPEG(_ image: UIImage) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            image.jpegData(compressionQuality: jpegQuality)
+        }.value
+    }
+
     func upload(
         image: UIImage,
         albumId: String,
@@ -43,7 +65,7 @@ final class ShotService {
         longitude: Double? = nil,
         locationName: String? = nil
     ) async throws {
-        guard let data = image.jpegData(compressionQuality: 0.85) else {
+        guard let data = await Self.encodeJPEG(image) else {
             throw NSError(
                 domain: "ShotService", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Couldn't encode image"]
@@ -108,7 +130,10 @@ final class ShotService {
         longitude: Double? = nil,
         locationName: String? = nil
     ) async throws {
-        guard let posterData = poster.jpegData(compressionQuality: 0.85) else {
+        // The poster is already capped at 1080×1920 by
+        // `CameraController.posterFrame`'s `gen.maximumSize`, so there is
+        // nothing to resize here — only the same 0.8 encode.
+        guard let posterData = await Self.encodeJPEG(poster) else {
             throw NSError(domain: "ShotService", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Couldn't encode poster"])
         }

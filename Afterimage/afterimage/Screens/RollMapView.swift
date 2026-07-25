@@ -73,7 +73,7 @@ struct RollMapView: View {
 
     private func pinView(_ album: Album) -> some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             withAnimation(Motion.cinematic) { selected = album }
         } label: {
             ZStack {
@@ -188,8 +188,6 @@ struct RollMapView: View {
     }
 
     private func dateStamp(_ album: Album) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d yyyy"
-        return f.string(from: album.createdAt).uppercased()
+        Formatters.rollDateStamp.string(from: album.createdAt).uppercased()
     }
 }

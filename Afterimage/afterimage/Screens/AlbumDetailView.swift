@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 struct AlbumDetailView: View {
     let album: Album
@@ -10,6 +9,16 @@ struct AlbumDetailView: View {
     /// this screen's own data comes from `shotService`. Held here so the
     /// settings sheet is handed the app's single shared instance explicitly.
     @Environment(AlbumService.self) private var albumService
+    /// The app's shared 30 s clock. This screen used to run a **one-second**
+    /// `Timer.publish` of its own, so the entire page — hero, bento grid,
+    /// comments — was invalidated every second for as long as it was open
+    /// (PERF_DIAGNOSIS §5.1). The only thing that needed that resolution was
+    /// the countdown, which now owns its own clock; see `DevelopingCountdown`.
+    @Environment(FeedClock.self) private var clock
+    /// Published by `MainTabView` — false only while this page's tab is the one
+    /// on screen and the app is foregrounded. See `AmbientMotion.swift`.
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     @State private var shotService = ShotService()
     @State private var showCamera = false
@@ -17,9 +26,11 @@ struct AlbumDetailView: View {
     @State private var showShare = false
     @State private var showSettings = false
     @State private var showRecap = false
-    @State private var now = Date()
+    /// Set by the one-shot timer in `body` at the exact instant the roll's
+    /// window closes — see the note there.
+    @State private var revealArrived = false
 
-    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var now: Date { clock.now }
 
     /// The roll's live shots.
     private var displayShots: [Shot] { shotService.shots }
@@ -61,11 +72,21 @@ struct AlbumDetailView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .onReceive(ticker) { now = $0 }
         .task {
             if let uid = auth.uid, let albumId = album.id {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
+        }
+        // The shared clock ticks every 30 s, which is the right cadence for
+        // everything else here but would leave a roll sitting at "00:00:00" for
+        // up to half a minute after it actually developed. One sleep, scheduled
+        // for the exact instant, closes that gap without a repeating timer —
+        // and `.task` cancels it the moment the screen goes away.
+        .task(id: album.id) {
+            let delay = album.revealAt.timeIntervalSinceNow
+            guard delay > 0 else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            revealArrived = true
         }
         // Firestore listeners don't self-remove on dealloc — every push/pop
         // without this leaked a live listener and its snapshot traffic.
@@ -110,7 +131,7 @@ struct AlbumDetailView: View {
         }
     }
 
-    private var isRevealed: Bool { now >= album.revealAt }
+    private var isRevealed: Bool { revealArrived || now >= album.revealAt }
 
     // MARK: - Floating header (fluid island, detached from top edge)
 
@@ -182,7 +203,14 @@ struct AlbumDetailView: View {
     private var developingView: some View {
         VStack(spacing: 20) {
             Spacer()
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            // The darkroom "breathing" aperture. 12 Hz, not the 30 it ran at:
+            // the cycle is ~4.5 s long and only drives opacities and a 4%
+            // scale, so a tick moves things by well under a thousandth — a
+            // multi-second sine does not need 30 wakeups a second. Gated like
+            // every other ambient clock (see `AmbientMotion.swift`); it was
+            // never brought into the gate when the rest of the app was.
+            TimelineView(.animation(minimumInterval: 1.0 / 12.0,
+                                    paused: ambientPaused || reduceMotion)) { context in
                 let t = context.date.timeIntervalSinceReferenceDate
                 let breathe = (sin(t * 1.4) + 1) / 2  // 0…1, ~4.5s cycle
                 ZStack {
@@ -209,9 +237,7 @@ struct AlbumDetailView: View {
                     .font(.system(size: 12, weight: .medium))
                     .tracking(3)
                     .foregroundStyle(Palette.darkRed)
-                Text(countdownString)
-                    .font(.system(size: 26, weight: .bold).monospacedDigit())
-                    .foregroundStyle(Palette.gold)
+                DevelopingCountdown(revealAt: album.revealAt)
                 Text("reveals \(formattedReveal)")
                     .font(.system(size: 11)).italic()
                     .foregroundStyle(Palette.textTertiary)
@@ -330,9 +356,7 @@ struct AlbumDetailView: View {
     }
 
     private var eyebrowText: String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, yyyy"
-        return "REVEALED · \(f.string(from: album.createdAt).uppercased())"
+        "REVEALED · \(Formatters.albumHeroDate.string(from: album.createdAt).uppercased())"
     }
 
     private var taglineText: String {
@@ -484,20 +508,54 @@ struct AlbumDetailView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var countdownString: String {
-        let interval = max(0, album.revealAt.timeIntervalSince(now))
+    private var formattedReveal: String {
+        Formatters.revealMoment.string(from: album.revealAt)
+    }
+}
+
+// MARK: - Developing countdown
+//
+// The seconds-resolution counter under the breathing aperture, and the ONLY
+// thing on this screen that wants a 1 Hz clock. It used to get one by ticking
+// `AlbumDetailView`'s `now`, so a `Text` that changes one digit a second was
+// dragging the hero, the bento grid and the comments plate through a body
+// re-evaluation with it. Owning the clock down here scopes the per-second
+// redraw to this label and nothing else.
+private struct DevelopingCountdown: View {
+    let revealAt: Date
+
+    /// True when the app is backgrounded or this page's tab isn't the one on
+    /// screen — a countdown nobody can see does not need to keep counting, and
+    /// it re-reads the wall clock on resume, so it can't drift.
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+
+    var body: some View {
+        // `.animation(minimumInterval:paused:)` rather than `.periodic(from:by:)`:
+        // `PeriodicTimelineSchedule` takes no `paused:`, and every clock in this
+        // app has to be gateable (see `AmbientMotion.swift`). A 1 s minimum
+        // interval is the same once-a-second cadence.
+        //
+        // Deliberately NOT OR'd with `accessibilityReduceMotion` — this is
+        // information, not decoration. Freezing a countdown for Reduce Motion
+        // would be a bug, not an accommodation.
+        TimelineView(.animation(minimumInterval: 1, paused: ambientPaused)) { context in
+            Text(Self.countdown(to: revealAt, from: context.date))
+                .font(.system(size: 26, weight: .bold).monospacedDigit())
+                .foregroundStyle(Palette.gold)
+        }
+    }
+
+    /// Unchanged from the version that lived on `AlbumDetailView`: days + hours
+    /// + minutes while the roll is more than a day out, a zero-padded clock
+    /// once it's inside a day.
+    private static func countdown(to revealAt: Date, from now: Date) -> String {
+        let interval = max(0, revealAt.timeIntervalSince(now))
         let days = Int(interval) / 86400
         let hours = (Int(interval) % 86400) / 3600
         let minutes = (Int(interval) % 3600) / 60
         let seconds = Int(interval) % 60
         if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
         return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-    }
-
-    private var formattedReveal: String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d 'at' h:mm a"
-        return f.string(from: album.revealAt)
     }
 }
 

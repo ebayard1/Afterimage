@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 // MARK: - ProfileView
 //
@@ -20,6 +19,9 @@ struct ProfileView: View {
     // meant a second copy of both listeners running permanently.
     @Environment(AlbumService.self) private var albumService
     @Environment(NotificationService.self) private var notifService
+    /// The app's single 30 s wall clock, replacing this page's own ticker.
+    /// See `FeedClock`.
+    @Environment(FeedClock.self) private var clock
 
     private var friendCount: Int { users.currentProfile?.friendIds.count ?? 0 }
 
@@ -30,14 +32,14 @@ struct ProfileView: View {
     @State private var sunriseAlbum: Album?
     /// Developed roll opened as a full-screen slideshow — exactly like the feed.
     @State private var slideshowAlbum: Album?
-    @State private var now = Date()
     @State private var showMap = false
     @State private var showPhotoCapture = false
     /// True while the archive is actively scrolling — drives the film-strip
     /// glare fade (full while scrolling, subtle at rest). See `ScrollSheen`.
     @State private var feedScrolling = false
 
-    private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+    /// Coarse "now" handed to each roll card, from the app's shared clock.
+    private var now: Date { clock.now }
 
     private var allAlbums: [Album] { albumService.albums }
     private var developing: [Album] {
@@ -162,11 +164,13 @@ struct ProfileView: View {
                     .environment(albumService)
             }
         }
-        .onReceive(ticker) { now = $0 }
         // Albums and notifications are already listening — `ContentView` starts
-        // them from the auth uid. Sheets/covers below are handed the shared
-        // services explicitly, exactly as `auth` always has been: a missing
-        // `@Environment(Service.self)` is a runtime trap, not a build error.
+        // them from the auth uid. The sheets/covers below are handed the shared
+        // services explicitly as belt-and-braces, not out of necessity: SwiftUI
+        // propagates the environment into presented content, and `ContentView`
+        // injects every service at the root of the authenticated tree — the
+        // friends and members sheets below take nothing explicitly and work off
+        // that inheritance. Naming them here documents what each screen needs.
         .sheet(isPresented: $showFriends) { FriendsListView() }
         .sheet(isPresented: $showNotifications) {
             NotificationsView()
@@ -205,7 +209,7 @@ struct ProfileView: View {
     private var identityHeader: some View {
         HStack(alignment: .top, spacing: 14) {
             Button {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 showPhotoCapture = true
             } label: {
                 avatarFrame
@@ -388,7 +392,7 @@ struct ProfileView: View {
         Group {
             if album.isRevealed {
                 Button {
-                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    Haptics.soft()
                     slideshowAlbum = album
                 } label: {
                     rollCardBody(album, index: index)

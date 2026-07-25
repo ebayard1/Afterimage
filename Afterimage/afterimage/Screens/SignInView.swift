@@ -408,7 +408,7 @@ struct SignInView: View {
     // MARK: Submit
 
     private func submit() {
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        Haptics.soft()
         isLoading = true
         errorMessage = nil
         Task {
@@ -418,10 +418,10 @@ struct SignInView: View {
                 } else {
                     try await auth.signIn(email: email, password: password)
                 }
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                Haptics.notify(.success)
             } catch {
                 errorMessage = Self.friendlyAuthMessage(for: error)
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                Haptics.notify(.error)
             }
             isLoading = false
         }

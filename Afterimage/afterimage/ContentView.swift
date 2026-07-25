@@ -14,6 +14,11 @@ struct ContentView: View {
     @State private var albums = AlbumService()
     @State private var notifs = NotificationService()
     @State private var activity = ActivityService()
+    // Same reasoning, for time rather than data: Rolls and Profile each ran
+    // their own 30 s ticker and Album Detail a 1 s one, all of them invalidating
+    // a whole page per tick while the other pages stayed mounted. One clock,
+    // injected once. See `FeedClock`.
+    @State private var clock = FeedClock()
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
     var body: some View {
@@ -97,5 +102,6 @@ struct ContentView: View {
             .environment(albums)
             .environment(notifs)
             .environment(activity)
+            .environment(clock)
     }
 }

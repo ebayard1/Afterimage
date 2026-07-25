@@ -79,7 +79,7 @@ struct SettingsView: View {
     private var floatingHeader: some View {
         HStack(spacing: 10) {
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
@@ -298,7 +298,7 @@ struct SettingsView: View {
     /// Account row — tinted icon circle + title/sub + button-in-button chevron.
     private func accountRow(icon: String, tint: Color, title: String, sub: String) -> some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             toast.show("not wired yet")
         } label: {
             HStack(spacing: 12) {

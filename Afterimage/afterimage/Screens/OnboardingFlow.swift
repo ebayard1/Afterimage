@@ -102,7 +102,7 @@ struct OnboardingFlow: View {
         HStack {
             Spacer()
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 onFinish()
             } label: {
                 HStack(spacing: 5) {
@@ -234,7 +234,7 @@ struct OnboardingFlow: View {
             }
 
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 if step < steps.count - 1 {
                     withAnimation(Motion.expressive) { step += 1 }
                 } else {

@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 struct HomeView: View {
     @Environment(AuthService.self) private var auth
@@ -9,13 +8,15 @@ struct HomeView: View {
     @Environment(AlbumService.self) private var albumService
     @Environment(ActivityService.self) private var activityService
     @Environment(NotificationService.self) private var notifService
+    /// The app's single 30 s wall clock, replacing this page's own ticker.
+    /// See `FeedClock`.
+    @Environment(FeedClock.self) private var clock
     @State private var showCreate = false
     @State private var showJoin = false
     @State private var showNotifications = false
     @State private var membersSheetAlbum: Album?
     @State private var sunriseAlbum: Album?
     @State private var expandedAlbumIds: Set<String> = []
-    @State private var now = Date()
     @State private var onThisDayAlbum: Album?
     @State private var slideshowAlbum: Album?
     @State private var isWindingFilm = false
@@ -29,22 +30,13 @@ struct HomeView: View {
     @Environment(\.ambientMotionPaused) private var ambientPaused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Activity rail source — the live fanned-out feed.
-    private var railEvents: [ActivityEvent] {
-        activityService.items.map { item in
-            ActivityEvent(
-                kind: item.eventKind,
-                actorUsername: item.actorUsername,
-                actorPhotoSeed: "",
-                actorPhotoURL: item.actorPhotoURL,
-                albumName: item.albumName,
-                detail: item.detail,
-                happenedAt: item.happenedAt
-            )
-        }
-    }
+    /// Activity rail source — the live fanned-out feed, already mapped into
+    /// rail events by the service. Mapping it here instead rebuilt all 40
+    /// structs on every body evaluation of this page (PERF_DIAGNOSIS §5.6).
+    private var railEvents: [ActivityEvent] { activityService.events }
 
-    private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+    /// Coarse "now" for the date math below, from the app's shared clock.
+    private var now: Date { clock.now }
 
     private var allAlbums: [Album] { albumService.albums }
     private var developing: [Album] { allAlbums.filter { !$0.isRevealed } }
@@ -136,7 +128,7 @@ struct HomeView: View {
                                     OnThisDayCard(memory: memory) {
                                         // Open the memory's album just like tapping it in the feed.
                                         // Pushes via NavigationStack value binding.
-                                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                        Haptics.soft()
                                         onThisDayAlbum = memory.album
                                     }
                                 }
@@ -175,7 +167,7 @@ struct HomeView: View {
                                         ScrollFadeIn(delay: Double(idx) * 0.08 + 0.1) {
                                         VStack(spacing: 14) {
                                             Button {
-                                                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                                Haptics.soft()
                                                 slideshowAlbum = album
                                             } label: {
                                                 AlbumRow(
@@ -214,7 +206,7 @@ struct HomeView: View {
                         }
                         .refreshable {
                             isWindingFilm = true
-                            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                            Haptics.soft()
                             try? await Task.sleep(nanoseconds: 900_000_000)
                             isWindingFilm = false
                         }
@@ -248,11 +240,14 @@ struct HomeView: View {
                 }
             }
         }
-        .onReceive(ticker) { now = $0 }
-        // Sheets and covers get every shared service handed to them explicitly,
-        // the same way `auth` always has been — a presented view that reads a
-        // missing `@Environment(Service.self)` traps at runtime, and the
-        // compiler can't catch it.
+        // Sheets and covers get the shared services handed to them explicitly,
+        // the same way `auth` always has been. This is belt-and-braces, not a
+        // requirement: SwiftUI propagates the environment into `.sheet`,
+        // `.fullScreenCover` and `navigationDestination` content, and
+        // `ContentView` injects every service at the root of the authenticated
+        // tree — several sheets here (members, sunrise, slideshow) rely on that
+        // inheritance and are fine. Listing them is self-documentation: it says
+        // at the call site what each presented screen depends on.
         .sheet(isPresented: $showCreate) {
             CreateAlbumView()
                 .environment(auth)
@@ -731,9 +726,7 @@ struct RevealedRollCard: View {
     private var totalShots: Int { max(album.displayShotCount, fallbackURLs.count) }
 
     private var dateStamp: String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d yyyy"
-        return f.string(from: album.createdAt).uppercased()
+        Formatters.rollDateStamp.string(from: album.createdAt).uppercased()
     }
 
     private var startFrameTop: Int {

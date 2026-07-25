@@ -104,7 +104,7 @@ struct CameraTabView: View {
 
             VStack(spacing: 12) {
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selectionChanged()
                     showCreate = true
                 } label: {
                     emptyActionLabel(icon: "plus.circle.fill", title: "CREATE ALBUM", filled: true)
@@ -114,7 +114,7 @@ struct CameraTabView: View {
                 .accessibilityLabel("Create a new album")
 
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selectionChanged()
                     showJoin = true
                 } label: {
                     emptyActionLabel(icon: "qrcode.viewfinder", title: "JOIN ALBUM", filled: false)

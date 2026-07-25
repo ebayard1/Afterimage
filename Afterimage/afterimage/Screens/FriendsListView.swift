@@ -65,7 +65,7 @@ struct FriendsListView: View {
                         .padding(.bottom, 18)
 
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selectionChanged()
                         showAddFriend = true
                     } label: {
                         HStack(spacing: 10) {
@@ -131,7 +131,7 @@ struct FriendsListView: View {
     private var floatingHeader: some View {
         HStack(spacing: 10) {
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
@@ -163,7 +163,7 @@ struct FriendsListView: View {
 
             // Add friend — prominent labeled gold pill
             Button {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 showAddFriend = true
             } label: {
                 HStack(spacing: 6) {
@@ -306,7 +306,7 @@ struct FriendsListView: View {
             }
             Spacer()
             Button {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 withAnimation(Motion.crisp) { r.onAccept() }
             } label: {
                 Image(systemName: "checkmark")
@@ -362,7 +362,7 @@ struct FriendsListView: View {
                 ForEach(Array(friends.enumerated()), id: \.element.id) { idx, f in
                     ScrollFadeIn(delay: Double(idx) * 0.04 + 0.05, distance: 10) {
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selectionChanged()
                             presentedPerson = f
                         } label: {
                             friendRow(f)

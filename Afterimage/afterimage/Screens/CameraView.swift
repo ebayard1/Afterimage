@@ -720,11 +720,13 @@ struct CameraView: View {
                 return
             }
             guard let albumId = album.id, let uid = auth.uid else { return }
-            // Poster extraction decodes a full video frame — keep it off the
+            // Poster extraction decodes a full video frame — it stays off the
             // main thread so the shutter doesn't hitch right at release.
-            let extracted = await Task.detached { [camera] in
-                camera.posterFrame(from: url)
-            }.value
+            // `posterFrame` is now `nonisolated async`, so awaiting it from
+            // this MainActor task runs it on the cooperative pool (and the
+            // decode itself on AVFoundation's queue); the old `Task.detached`
+            // wrapper existed only because the API used to be blocking.
+            let extracted = await camera.posterFrame(from: url)
             let poster = extracted ?? Self.blackPoster()
             // Background upload — never blocks the next shot.
             Task {
@@ -1048,14 +1050,25 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     var isRecording: Bool { movieOutput.isRecording }
 
     /// Extract the first frame of a recorded movie as the poster still.
-    func posterFrame(from url: URL) -> UIImage? {
+    ///
+    /// `async` because `copyCGImage(at:actualTime:)` is deprecated in iOS 18 —
+    /// it blocks the calling thread while AVFoundation demuxes and decodes.
+    /// `image(at:)` is the replacement and does that work on AVFoundation's own
+    /// queue. The method is `nonisolated async` (the whole controller is), so
+    /// awaiting it from a MainActor task never runs the decode on the main
+    /// thread and the caller no longer needs its own `Task.detached`.
+    ///
+    /// The 1080×1920 cap is unchanged: the poster is a still thumbnail for the
+    /// film strip and the slideshow, and `gen.maximumSize` means AVFoundation
+    /// downscales during decode rather than after.
+    func posterFrame(from url: URL) async -> UIImage? {
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 1080, height: 1920)
         let t = CMTime(value: 1, timescale: 30)
-        guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else { return nil }
-        return UIImage(cgImage: cg)
+        guard let frame = try? await gen.image(at: t) else { return nil }
+        return UIImage(cgImage: frame.image)
     }
 
     /// Stop the sensor WITHOUT deconfiguring — inputs/outputs stay attached so
@@ -1223,42 +1236,108 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
         }
     }
 
-    /// Bakes orientation into pixels, center-crops to `aspect`, optionally mirrors
-    /// (front camera, to match the mirrored preview).
+    /// Longest edge, in pixels, that a processed capture is allowed to keep.
+    ///
+    /// The sensor hands us ~4000 px stills at `.high`, but **nothing in the app
+    /// ever displays more than 2600 px** (`SlideshowPhoto.maxPixelSize`, the
+    /// full-screen tier) and the film strip decodes at 700 px
+    /// (`FilmFrameTier.normal`). Everything above 2048 is bytes the user waits
+    /// on at the shutter, extra radio-on time (a real heat source on cellular)
+    /// and permanent Storage cost, in exchange for pixels no surface renders.
+    ///
+    /// 2048 is below the slideshow's 2600 px *budget*, which is fine: the
+    /// slideshow just decodes a 2048 px source at its native size. Combined
+    /// with JPEG 0.8 in `ShotService.upload`, a shot lands at roughly
+    /// 400–800 KB instead of 3–5 MB.
+    ///
+    /// The number that actually binds full-screen is the SHORT edge, because
+    /// the viewfinder crop is ~0.58 aspect: a shot ends up ~1189 × 2048, and
+    /// `scaledToFit` on a 1320 × 2868 panel scales it up ~11%. Invisible on a
+    /// photo, but that is the headroom being spent — raise this constant (and
+    /// only this constant) if a surface ever needs more, e.g. a pinch-zoom
+    /// viewer. It is a deliberate ceiling, not an arbitrary number.
+    ///
+    /// NOTE: this caps what is *encoded and uploaded*. The capture resolution
+    /// and the `.high` session preset are untouched (`.high` is required for
+    /// simultaneous photo + movie output).
+    private static let maxUploadPixels: CGFloat = 2048
+
+    /// Bakes orientation into pixels, center-crops to `aspect`, caps the long
+    /// edge at `maxUploadPixels`, and optionally mirrors (front camera, to
+    /// match the mirrored preview).
+    ///
+    /// All four steps happen in **one** renderer pass. This used to be an
+    /// upright pass at full sensor size, a `CGImage` crop, and — for the front
+    /// camera — a second full-sensor pass to mirror. Folding the crop, the
+    /// resize and the mirror into the pass we already had means the downscale
+    /// makes capture *cheaper*: the single pass writes a ≤2048 px bitmap
+    /// instead of a ~4000 px one, and the front camera no longer pays for a
+    /// second full-resolution render.
     private func processed(_ image: UIImage, aspect: CGFloat, mirror: Bool) -> UIImage {
+        // 1. Center-crop rect, in the image's own display (post-orientation)
+        //    space. Same math as before; the units moved from `CGImage` pixels
+        //    to points, which are identical for a capture JPEG (scale 1) and
+        //    stay correct if that ever changes, since the renderer's scale
+        //    below is the image's own.
+        let full = image.size
+        guard full.width > 0, full.height > 0 else { return image }
+        var crop = CGRect(origin: .zero, size: full)
+        if aspect > 0 {
+            let imgAspect = full.width / full.height
+            if imgAspect > aspect {
+                let newW = (full.height * aspect).rounded()
+                crop = CGRect(x: ((full.width - newW) / 2).rounded(), y: 0,
+                              width: newW, height: full.height)
+            } else {
+                let newH = (full.width / aspect).rounded()
+                crop = CGRect(x: 0, y: ((full.height - newH) / 2).rounded(),
+                              width: full.width, height: newH)
+            }
+        }
+        // A pathological `aspect` could round a side to zero; `sx`/`sy` below
+        // divide by these.
+        crop.size.width = max(1, crop.width)
+        crop.size.height = max(1, crop.height)
+
+        // 2. Shrink factor for the upload ceiling, measured on the CROPPED
+        //    frame's long edge in pixels. Never upscales — a capture that is
+        //    already under the cap is rendered 1:1.
+        let longEdgePixels = max(crop.width, crop.height) * image.scale
+        let shrink = longEdgePixels > Self.maxUploadPixels
+            ? Self.maxUploadPixels / longEdgePixels
+            : 1
+
+        let outSize = CGSize(width: max(1, (crop.width * shrink).rounded()),
+                             height: max(1, (crop.height * shrink).rounded()))
+        // Derive the draw scale FROM the rounded output size rather than reusing
+        // `shrink`, so the crop rect maps exactly onto [0, outSize]. Rounding
+        // `shrink` up by a fraction of a pixel would otherwise leave an
+        // uncovered sliver, and `format.opaque` paints that black.
+        let sx = outSize.width / crop.width
+        let sy = outSize.height / crop.height
+
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = image.scale
         format.opaque = true
 
-        // 1. Normalize orientation so we can crop in display space.
-        let upright = UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: image.size))
-        }
-
-        // 2. Center-crop to the target aspect.
-        var result = upright
-        if aspect > 0, let cg = upright.cgImage {
-            let w = CGFloat(cg.width), h = CGFloat(cg.height)
-            let imgAspect = w / h
-            let crop: CGRect
-            if imgAspect > aspect {
-                let newW = (h * aspect).rounded()
-                crop = CGRect(x: ((w - newW) / 2).rounded(), y: 0, width: newW, height: h)
-            } else {
-                let newH = (w / aspect).rounded()
-                crop = CGRect(x: 0, y: ((h - newH) / 2).rounded(), width: w, height: newH)
+        return UIGraphicsImageRenderer(size: outSize, format: format).image { ctx in
+            // Photos, not UI: pay for the good resampler on the one pass we do.
+            ctx.cgContext.interpolationQuality = .high
+            // 3. Mirror front-camera shots. A horizontal flip commutes with a
+            //    *center* crop, so applying it here is identical to the old
+            //    crop-then-mirror ordering.
+            if mirror {
+                ctx.cgContext.translateBy(x: outSize.width, y: 0)
+                ctx.cgContext.scaleBy(x: -1, y: 1)
             }
-            if let cropped = cg.cropping(to: crop) {
-                result = UIImage(cgImage: cropped, scale: image.scale, orientation: .up)
-            }
-        }
-
-        // 3. Mirror front-camera shots to match the preview.
-        guard mirror else { return result }
-        return UIGraphicsImageRenderer(size: result.size, format: format).image { ctx in
-            ctx.cgContext.translateBy(x: result.size.width, y: 0)
-            ctx.cgContext.scaleBy(x: -1, y: 1)
-            result.draw(in: CGRect(origin: .zero, size: result.size))
+            // 4. Draw the whole image scaled down and offset so the crop rect
+            //    lands on the origin; everything outside the context is clipped
+            //    away. `UIImage.draw` bakes in `imageOrientation`, which is what
+            //    the old dedicated "upright" pass was for.
+            image.draw(in: CGRect(x: -crop.minX * sx,
+                                  y: -crop.minY * sy,
+                                  width: full.width * sx,
+                                  height: full.height * sy))
         }
     }
 

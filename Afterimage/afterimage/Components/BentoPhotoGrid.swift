@@ -169,7 +169,7 @@ struct BentoPhotoGrid: View {
         let outerRadius: CGFloat = isHero ? 18 : 10
         let innerRadius: CGFloat = outerRadius - 3
         return Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             onTapShot(index)
         } label: {
             ZStack(alignment: .topTrailing) {

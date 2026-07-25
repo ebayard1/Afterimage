@@ -59,7 +59,7 @@ struct ProfileSetupView: View {
     /// so the escape is to sign out and return to the sign-in screen.
     private var startOverButton: some View {
         Button {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            Haptics.soft()
             try? auth.signOut()
         } label: {
             HStack(spacing: 5) {

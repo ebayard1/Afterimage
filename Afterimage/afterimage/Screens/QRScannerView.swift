@@ -149,7 +149,7 @@ final class QRScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegat
               let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               let value = obj.stringValue else { return }
         didScan = true
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Haptics.notify(.success)
         onScanned?(value)
     }
 }

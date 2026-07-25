@@ -248,7 +248,7 @@ struct RollSlideshowView: View {
 
     private var closeButton: some View {
         Button {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            Haptics.soft()
             dismissSlideshow()
         } label: {
             Image(systemName: "xmark")
@@ -321,7 +321,7 @@ struct RollSlideshowView: View {
     private func beginHoldPause() {
         guard pressStart != nil, !isDragging else { return }
         isPaused = true
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        Haptics.soft()
     }
 
     private func endHoldPause() {
@@ -523,34 +523,56 @@ private struct SlideshowPhoto: View {
 
     /// Longest side a slideshow decode keeps, in pixels — full-screen quality
     /// on any current iPhone at a fraction of a camera JPEG's decode cost.
-    static let maxPixelSize: CGFloat = 2600
+    ///
+    /// `nonisolated` because the prefetch and decode paths read it from
+    /// detached tasks; this file defaults to MainActor, which would otherwise
+    /// isolate the constant (a warning today, a hard error under Swift 6).
+    /// Same reason `FilmFrameTier.maxDimension` is nonisolated.
+    nonisolated static let maxPixelSize: CGFloat = 2600
 
     /// Download + decode `url` into the full-screen cache tier ahead of time.
     /// No-op if it's already cached; fire-and-forget on a background task.
-    static func warm(url: URL) {
+    nonisolated static func warm(url: URL) {
         guard FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) == nil else { return }
         Task.detached(priority: .utility) {
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let img = FilmImageCache.decodeDownsampled(data, maxDimension: maxPixelSize)
-            else { return }
-            FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
+            // Same helper the film strip uses: fetch with retry/backoff, decode
+            // inside its own detached task.
+            let outcome = await FilmImageCache.fetchAndDecode(url: url) { data in
+                FilmImageCache.decodeDownsampled(data, maxDimension: maxPixelSize)
+            }
+            if case .value(let img) = outcome {
+                FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
+            }
         }
     }
 
     private func load() async {
-        guard let url else { await MainActor.run { image = nil }; return }
+        guard let url else { image = nil; return }
         if let cached = FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) {
-            await MainActor.run { image = cached }
+            image = cached
             return
         }
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let img = FilmImageCache.decodeDownsampled(data, maxDimension: Self.maxPixelSize) {
-                FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
-                await MainActor.run { image = img }
-            }
-        } catch {
-            // leave placeholder
+        // `load()` is MainActor-isolated (view `.task`), so calling
+        // `decodeDownsampled` from here ran a 2600 px JPEG decode on the main
+        // thread — the same bug Phase C fixed in `FilmFrameImage`, and the
+        // reason the slideshow hitched on every uncached frame. Reuse the same
+        // helper: the closure captures only `Data` and `CGFloat`, never the
+        // view, and the decode runs inside `fetchAndDecode`'s detached task.
+        let maxDimension = Self.maxPixelSize
+        let outcome = await FilmImageCache.fetchAndDecode(url: url) { data in
+            FilmImageCache.decodeDownsampled(data, maxDimension: maxDimension)
+        }
+        switch outcome {
+        case .cancelled:
+            return
+        case .value(let img):
+            FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
+            image = img
+        case .failed:
+            // Leave the previous frame showing — the slideshow's placeholder is
+            // deliberately transparent so a stall reads as a held frame, not a
+            // flash to black.
+            break
         }
     }
 }
