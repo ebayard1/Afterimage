@@ -106,7 +106,7 @@ struct NotificationsView: View {
     private var floatingHeader: some View {
         HStack(spacing: 10) {
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
@@ -242,7 +242,7 @@ struct NotificationsView: View {
             }
             Spacer()
             Button {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 withAnimation(Motion.crisp) { r.onAccept() }
             } label: {
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
@@ -288,7 +288,7 @@ struct NotificationsView: View {
                     ForEach(Array(notifRows.enumerated()), id: \.element.id) { idx, n in
                         ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selectionChanged()
                                 notifService.markRead(n.id)
                             } label: { notificationRow(n) }
                             .buttonStyle(.plain).pressEffect(scale: 0.985)

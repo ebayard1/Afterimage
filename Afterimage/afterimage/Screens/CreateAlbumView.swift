@@ -157,7 +157,7 @@ struct CreateAlbumView: View {
     private func durationCard(_ opt: (label: String, days: Int, shots: Int)) -> some View {
         let selected = durationDays == opt.days
         return Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             withAnimation(Motion.tap) { durationDays = opt.days }
         } label: {
             VStack(spacing: 4) {
@@ -184,7 +184,7 @@ struct CreateAlbumView: View {
 
     private var presenceToggle: some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             withAnimation(Motion.tap) { requirePresence.toggle() }
         } label: {
             HStack(spacing: 12) {
@@ -270,7 +270,7 @@ struct CreateAlbumView: View {
 
     private func friendRow(_ f: PersonRef, isInvited: Bool) -> some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             withAnimation(Motion.tap) {
                 if isInvited { invited.remove(f.id) } else { invited.insert(f.id) }
             }
@@ -558,11 +558,11 @@ struct CreateAlbumView: View {
                         try? await albumService.join(albumId: id, userId: friendUid)
                     }
                     createdAlbumId = id
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.notify(.success)
                     withAnimation(Motion.cinematic) { step = .ready }
                 } catch {
                     errorMessage = error.localizedDescription
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    Haptics.notify(.error)
                 }
             } else {
                 errorMessage = "you must be signed in to start a roll"

@@ -74,7 +74,7 @@ struct MainTabView: View {
             // broke the strip before. See `ScrollGeometry.swift`.
             .environment(\.viewportHeight, fullHeight)
             .onChange(of: selectedTab) { _, _ in
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
             }
         }
     }

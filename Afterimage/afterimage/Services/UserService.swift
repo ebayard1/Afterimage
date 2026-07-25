@@ -138,12 +138,30 @@ final class UserService {
 
     // MARK: - Avatar
 
+    /// Longest edge, in pixels, an avatar is stored at.
+    ///
+    /// Avatars are drawn at ≤80 pt anywhere in the app (the profile header; the
+    /// rail, comments and member rows are 26–44 pt). At 3× that is 240 device
+    /// pixels, so 512 is already 2× headroom for a future larger treatment.
+    /// The camera hands us a 2048 px square (`CameraController.processed`), and
+    /// uploading that would be ~16× the pixels — for an image every `AsyncImage`
+    /// then decodes full-size into a 40 pt circle. Deliberate ceiling.
+    ///
+    /// `nonisolated` so the detached encode below can read it — this class is
+    /// `@MainActor`, which would otherwise isolate the constant too.
+    nonisolated private static let avatarMaxPixels: CGFloat = 512
+
     /// Uploads a profile photo to `users/{uid}/avatar.jpg`, writes the resulting
     /// URL onto the user's profile, and returns it. The live profile listener
     /// then refreshes `currentProfile.photoURL` everywhere it's shown.
     @discardableResult
     func uploadAvatar(_ image: UIImage, uid: String) async throws -> String {
-        guard let data = image.jpegData(compressionQuality: 0.85) else {
+        // Downscale + encode off the main actor — this class is @MainActor, and
+        // both the resize pass and the JPEG encode are real CPU work.
+        let encoded = await Task.detached(priority: .userInitiated) {
+            Self.encodedAvatar(image)
+        }.value
+        guard let data = encoded else {
             throw NSError(domain: "UserService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "couldn't encode photo"])
         }
@@ -160,6 +178,32 @@ final class UserService {
         let url = "\(base)\(sep)cb=\(Int(Date().timeIntervalSince1970))"
         try await db.collection("users").document(uid).updateData(["photoURL": url])
         return url
+    }
+
+    /// Resize `image` to at most `avatarMaxPixels` on its long edge (never
+    /// upscales) and JPEG-encode it at `ShotService.jpegQuality` — the same 0.8
+    /// ceiling shots use. One renderer pass; returns nil only if the encode does.
+    nonisolated private static func encodedAvatar(_ image: UIImage) -> Data? {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+
+        let longEdgePixels = max(size.width, size.height) * image.scale
+        let shrink = longEdgePixels > avatarMaxPixels
+            ? avatarMaxPixels / longEdgePixels
+            : 1
+        // Already under the ceiling (e.g. a small library pick) — encode as-is.
+        guard shrink < 1 else { return image.jpegData(compressionQuality: ShotService.jpegQuality) }
+
+        let outSize = CGSize(width: max(1, (size.width * shrink).rounded()),
+                             height: max(1, (size.height * shrink).rounded()))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = true
+        let small = UIGraphicsImageRenderer(size: outSize, format: format).image { ctx in
+            ctx.cgContext.interpolationQuality = .high
+            image.draw(in: CGRect(origin: .zero, size: outSize))
+        }
+        return small.jpegData(compressionQuality: ShotService.jpegQuality)
     }
 
     // MARK: - Push token

@@ -131,17 +131,17 @@ struct SunriseRevealView: View {
         }
         .task {
             try? await Task.sleep(nanoseconds: 2_400_000_000)
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             withAnimation(Motion.cinematic) { stage = 2 }
             try? await Task.sleep(nanoseconds: 2_400_000_000)
-            // The reveal moment — heavy haptic + light prepare for whatever lands next.
-            let heavy = UIImpactFeedbackGenerator(style: .heavy)
-            heavy.prepare()
-            heavy.impactOccurred(intensity: 1.0)
+            // The reveal moment — the app's heaviest haptic, at full intensity.
+            // `Haptics` keeps the generator prepared across taps, so the manual
+            // `prepare()` that used to sit here is no longer needed.
+            Haptics.heavy(intensity: 1.0)
             withAnimation(Motion.cinematic) { stage = 3 }
             // Soft notification "success" feedback a beat after.
             try? await Task.sleep(nanoseconds: 200_000_000)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            Haptics.notify(.success)
         }
         .preferredColorScheme(.dark)
     }

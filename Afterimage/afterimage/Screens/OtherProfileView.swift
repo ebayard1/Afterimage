@@ -209,7 +209,7 @@ struct BlockReportSheet: View {
                     }
                     Spacer()
                     Button {
-                        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                        Haptics.heavy()
                         toast.success("\(target) blocked")
                         dismiss()
                     } label: {

@@ -90,7 +90,7 @@ struct RecapView: View {
                     let velocity = abs(value.translation.height) / elapsedMs
                     dragStart = nil
                     if value.translation.height > 100 || (value.translation.height > 24 && velocity > 0.11) {
-                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                        Haptics.soft()
                         dismiss()
                     } else {
                         withAnimation(Motion.tap) { dragOffset = 0 }
@@ -113,7 +113,7 @@ struct RecapView: View {
         HStack(alignment: .top) {
             // Big, obvious close button — uses "Done" word so it's unmissable.
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 dismiss()
             } label: {
                 HStack(spacing: 6) {

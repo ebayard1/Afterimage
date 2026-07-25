@@ -90,7 +90,7 @@ struct AlbumSettingsView: View {
     private var floatingHeader: some View {
         HStack(spacing: 10) {
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
@@ -379,7 +379,7 @@ struct AlbumSettingsView: View {
     // behind a separate code branch.
 
     private func rename() {
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selectionChanged()
         let newName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newName.isEmpty, let id = album.id else { return }
         Task {

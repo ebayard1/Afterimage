@@ -147,7 +147,7 @@ struct ProfilePhotoCaptureView: View {
     }
 
     private func capture() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Haptics.medium()
         Task {
             // Square crop for the avatar.
             if let img = try? await camera.capturePhoto(cropAspect: 1.0) {

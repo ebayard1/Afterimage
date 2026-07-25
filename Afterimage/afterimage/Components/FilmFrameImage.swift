@@ -55,10 +55,24 @@ enum FilmImageCache {
     // every decode back onto the main thread.
     nonisolated(unsafe) static let shared: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
-        c.countLimit = 240          // plenty for several full rolls on screen
-        // Hard byte ceiling — without it, 240 full-res decodes could pin
-        // multiple GB and ride the app into memory-pressure churn.
-        c.totalCostLimit = 256 << 20
+        // Sized against what the tiers actually decode to now that nothing is
+        // cached at full camera resolution (bytes = w × h × 4):
+        //
+        //   • normal (strip frame, 700 px long edge)  ≈ 525 × 700  ≈ 1.5 MB
+        //   • sealed PAIR (2 × 256 px long edge)      ≈ 2 × 0.2 MB ≈ 0.4 MB
+        //   • full (slideshow, 2600 px long edge)     ≈ 1950 × 2600 ≈ 20 MB
+        //
+        // A roll card holds ~7 strip cells, so 150 entries still covers roughly
+        // twenty cards' worth of frames — far more than can be on screen or one
+        // flick away, which is all a cache has to reach.
+        c.countLimit = 150
+        // Hard byte ceiling, and the limit that actually binds: 128 MB is ~85
+        // strip frames, or a slideshow's half-dozen full-screen decodes sitting
+        // on top of the strips behind it. The old 256 MB ceiling was sized for
+        // full-resolution decodes that no longer happen, and a resident set that
+        // large mostly buys memory-warning eviction churn on older devices
+        // (PERF_DIAGNOSIS §5.3).
+        c.totalCostLimit = 128 << 20
         return c
     }()
 
