@@ -6,28 +6,59 @@ import FirebaseFirestore
 final class CommentService {
     var comments: [Comment] = []
 
+    /// Which album `comments` currently describes.
+    ///
+    /// Deliberately *observed* (no `@ObservationIgnored`): callers keep the
+    /// last snapshot on screen while the listener is detached, so they need a
+    /// way to tell "this is my roll's thread" from "this is whatever roll the
+    /// service was pointed at before". See `pauseListening()`.
+    private(set) var loadedAlbumId: String?
+
     @ObservationIgnored private var listener: ListenerRegistration?
     @ObservationIgnored private let db = Firestore.firestore()
-    @ObservationIgnored private var currentAlbumId: String?
 
+    /// Idempotent in both directions: re-calling for the album that is already
+    /// live is a no-op (a visibility gate that fires twice must not churn the
+    /// Watch stream), and calling for a *different* album re-keys cleanly.
     func startListening(albumId: String) {
-        currentAlbumId = albumId
+        if listener != nil, loadedAlbumId == albumId { return }
         listener?.remove()
+        // Switching rolls is the one case where retained comments are actually
+        // wrong — drop them rather than flash another roll's thread.
+        if loadedAlbumId != albumId { comments = [] }
+        loadedAlbumId = albumId
         listener = db.collection("albums").document(albumId).collection("comments")
             .order(by: "createdAt")
             .addSnapshotListener { [weak self] snapshot, _ in
                 guard let docs = snapshot?.documents else { return }
                 Task { @MainActor in
-                    self?.comments = docs.compactMap { try? $0.data(as: Comment.self) }
+                    // The hop means a snapshot from a just-removed listener can
+                    // still land after a re-key; drop it if it isn't ours.
+                    guard let self, self.loadedAlbumId == albumId else { return }
+                    self.comments = docs.compactMap { try? $0.data(as: Comment.self) }
                 }
             }
     }
 
-    func stopListening() {
+    /// Detach the listener but KEEP the last snapshot.
+    ///
+    /// This is what a *visibility* gate wants. Clearing `comments` on the way
+    /// out meant a card scrolled off and back re-rendered "TOP COMMENTS (0)"
+    /// with no rows for the frame(s) before the (cache-served) snapshot landed
+    /// — a visible blink on every scroll-back, on every revealed roll. The data
+    /// is a handful of structs; holding it costs nothing and the panel redraws
+    /// instantly with the previous content, then updates in place.
+    func pauseListening() {
         listener?.remove()
         listener = nil
+    }
+
+    /// Full reset: detach *and* forget. For teardowns where the data itself is
+    /// no longer valid — sign-out, or a screen dismissing for good.
+    func stopListening() {
+        pauseListening()
         comments = []
-        currentAlbumId = nil
+        loadedAlbumId = nil
     }
 
     func post(text: String,

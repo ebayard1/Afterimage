@@ -31,7 +31,7 @@ You are the backend/services engineer for Afterimage. You own `Afterimage/afteri
 4. Denormalized fields (`previewURLs`, `shotCount`, `coverPhotoURL`) are owned server-side by
    the `onShotCreated` Cloud Function so security rules stay strict. Client-side fallbacks
    (e.g. `AlbumService.fetchShotURLs`) must be cached, not re-fetched per view.
-5. Uploads are capped before they leave the device (photos 2048px long edge / JPEG 0.8,
+5. Uploads are capped before they leave the device (photos 2600px long edge / JPEG 0.85,
    avatars 512px) — smaller uploads mean less radio time and less heat.
 
 ## Gotchas that are still true

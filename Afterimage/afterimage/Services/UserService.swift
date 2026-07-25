@@ -181,7 +181,7 @@ final class UserService {
     }
 
     /// Resize `image` to at most `avatarMaxPixels` on its long edge (never
-    /// upscales) and JPEG-encode it at `ShotService.jpegQuality` — the same 0.8
+    /// upscales) and JPEG-encode it at `ShotService.jpegQuality` — the same 0.85
     /// ceiling shots use. One renderer pass; returns nil only if the encode does.
     nonisolated private static func encodedAvatar(_ image: UIImage) -> Data? {
         let size = image.size

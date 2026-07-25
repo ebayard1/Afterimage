@@ -8,22 +8,44 @@ struct TopCommentsBlock: View {
 
     @Environment(AuthService.self) private var auth
     @Environment(ToastCenter.self) private var toast
+    /// Per-card: `@State` in a view whose feed identity is keyed on `album.id`
+    /// (`ForEach(Array(revealed.enumerated()), id: \.element.id)` in `HomeView`),
+    /// so each roll gets its own service and its own listener.
     @State private var service = CommentService()
     @State private var draft = ""
+    /// The debounced listener teardown — the same shape as
+    /// `CameraView.pendingStop`: a cancellable `Task` held in `@State` that is
+    /// cancelled if the thing comes back before the clock runs out. Attaching
+    /// stays immediate; only the detach waits, so flicking past a card costs no
+    /// Firestore target add/remove at all instead of one pair per card passed.
+    @State private var pendingDetach: Task<Void, Never>?
+    /// Mirrors the gate, so an album re-key can re-attach only when on screen.
+    @State private var isCardVisible = false
     @FocusState private var composerFocused: Bool
 
+    /// Comments for **this** album only.
+    ///
+    /// `service` keeps its last snapshot when the listener detaches (see
+    /// `CommentService.pauseListening`), so this guard is what makes that safe:
+    /// if a state box were ever reused for a different roll, retained comments
+    /// render as empty rather than as the previous roll's thread — and the
+    /// service clears them on re-key anyway.
+    private var comments: [Comment] {
+        service.loadedAlbumId == album.id ? service.comments : []
+    }
+
     private var topLevel: [Comment] {
-        service.comments.filter { $0.parentId == nil }
+        comments.filter { $0.parentId == nil }
     }
     private func replies(to id: String) -> [Comment] {
-        service.comments.filter { $0.parentId == id }
+        comments.filter { $0.parentId == id }
     }
     /// Two most-recent top-level comments, always visible as a preview.
     private var previewComments: [Comment] { Array(topLevel.prefix(2)) }
     /// Comments beyond the preview — only shown when expanded.
     private var remainingTopLevel: [Comment] { Array(topLevel.dropFirst(2)) }
     private var hasMore: Bool {
-        service.comments.count > previewComments.count
+        comments.count > previewComments.count
     }
 
     /// Wraps a comment row in an erased view so we can index + stagger animations.
@@ -76,7 +98,7 @@ struct TopCommentsBlock: View {
                 Button {
                     withAnimation(Motion.expressive) { isExpanded = true }
                 } label: {
-                    Text("view all \(service.comments.count) comments")
+                    Text("view all \(comments.count) comments")
                         .font(.system(size: 12)).italic()
                         .foregroundStyle(Palette.textTertiary)
                         .padding(.vertical, 8)
@@ -116,20 +138,51 @@ struct TopCommentsBlock: View {
         //
         // The always-visible two-comment preview and the count badge both read
         // from this listener, so gating on visibility is precisely what keeps
-        // them fed for the rolls being looked at. Reattaching delivers a fresh
-        // snapshot (served from Firestore's local cache), so nothing offscreen
-        // is ever seen stale.
+        // them fed for the rolls being looked at. Going offscreen detaches the
+        // listener but does NOT drop the comments (`pauseListening`), so coming
+        // back paints the previous content immediately and then updates when
+        // the fresh (locally-cached) snapshot lands — no empty flash.
+        //
+        // The teardown is debounced the way `CameraView.pendingStop` debounces
+        // `camera.stop()`. `onScrollVisibilityChange` fires on threshold
+        // crossings, not per frame, but a fast flick through fifteen revealed
+        // rolls still meant ~30 target add/removes on the Watch stream (each
+        // one also a local cache query) in about a second and a half. Waiting
+        // 300ms before detaching — and cancelling that wait if the card comes
+        // back — makes a flick free. Attaching is never delayed.
         .onScrollVisibilityChange(threshold: 0.1) { isVisible in
+            isCardVisible = isVisible
+            // Either direction cancels a detach that hasn't fired yet.
+            pendingDetach?.cancel()
+            pendingDetach = nil
             if isVisible {
                 if let id = album.id { service.startListening(albumId: id) }
             } else {
-                service.stopListening()
+                pendingDetach = Task {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled else { return }
+                    service.pauseListening()
+                    pendingDetach = nil
+                }
             }
+        }
+        // Feed identity is keyed on `album.id`, so this normally never fires.
+        // It's here so that if a state box is ever handed a different roll, the
+        // listener re-keys instead of the panel sitting empty (the `comments`
+        // guard above blanks it) until the next visibility crossing.
+        .onChange(of: album.id) { _, newId in
+            guard isCardVisible, let newId else { return }
+            service.startListening(albumId: newId)
         }
         // Backstop for any non-feed use of this block, and for the feed itself
         // when the whole page goes away. `onScrollVisibilityChange` only
-        // reports inside a scroll view.
-        .onDisappear { service.stopListening() }
+        // reports inside a scroll view. Pause, not stop: the page coming back
+        // is the same "was never invalidated, just not being looked at" case.
+        .onDisappear {
+            pendingDetach?.cancel()
+            pendingDetach = nil
+            service.pauseListening()
+        }
     }
 
     private var headerBar: some View {
@@ -149,7 +202,7 @@ struct TopCommentsBlock: View {
                     Image(systemName: "bubble.left.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(Palette.textTertiary)
-                    Text("\(service.comments.count)")
+                    Text("\(comments.count)")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(.black)
                         .padding(.horizontal, 8).padding(.vertical, 2)

@@ -1241,26 +1241,38 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     /// The sensor hands us ~4000 px stills at `.high`, but **nothing in the app
     /// ever displays more than 2600 px** (`SlideshowPhoto.maxPixelSize`, the
     /// full-screen tier) and the film strip decodes at 700 px
-    /// (`FilmFrameTier.normal`). Everything above 2048 is bytes the user waits
+    /// (`FilmFrameTier.normal`). Everything above that is bytes the user waits
     /// on at the shutter, extra radio-on time (a real heat source on cellular)
     /// and permanent Storage cost, in exchange for pixels no surface renders.
     ///
-    /// 2048 is below the slideshow's 2600 px *budget*, which is fine: the
-    /// slideshow just decodes a 2048 px source at its native size. Combined
-    /// with JPEG 0.8 in `ShotService.upload`, a shot lands at roughly
-    /// 400–800 KB instead of 3–5 MB.
+    /// **The binding dimension is the SHORT edge, not this one.** Captures are
+    /// center-cropped to the viewfinder box (`Shell.screen`, 446 × 768 →
+    /// ~0.581), so they are tall portraits: short edge ≈ long edge × 0.581. The
+    /// slideshow — the app's hero surface — lays a photo out `scaledToFit` on a
+    /// panel ~1320 px wide, so the short edge must be **≥ ~1320 px** or every
+    /// photo is *upscaled* there. That requires a long edge of
+    /// ≥ 1320 / 0.581 ≈ **2273 px**; call it ~2400 for margin on wider panels.
     ///
-    /// The number that actually binds full-screen is the SHORT edge, because
-    /// the viewfinder crop is ~0.58 aspect: a shot ends up ~1189 × 2048, and
-    /// `scaledToFit` on a 1320 × 2868 panel scales it up ~11%. Invisible on a
-    /// photo, but that is the headroom being spent — raise this constant (and
-    /// only this constant) if a surface ever needs more, e.g. a pinch-zoom
-    /// viewer. It is a deliberate ceiling, not an arbitrary number.
+    /// 2600 is chosen to match `SlideshowPhoto.maxPixelSize` exactly, so the two
+    /// constants agree and the slideshow's full-screen tier is actually
+    /// reachable. At the ~0.581 crop a shot lands at ~1510 × 2600 — the short
+    /// edge clears 1320 with room to spare, so the hero surface *downscales*
+    /// (supersampled, crisp) rather than magnifying JPEG ringing.
+    ///
+    /// **Do not lower this below ~2400.** It looks like free headroom and is
+    /// not: at 2048 the short edge is only ~1189 px and every new photo is
+    /// upscaled ~1.11× full-screen. It is also irreversible — photos uploaded
+    /// at a low cap can never be re-fetched larger.
+    ///
+    /// Even at 2600 this is still ~58% fewer pixels than the ~2341 × 4032 the
+    /// sensor crop yields, so the shutter-latency and heat win holds; combined
+    /// with JPEG 0.85 in `ShotService.upload` a shot lands around 1–1.5 MB
+    /// instead of 3–5 MB.
     ///
     /// NOTE: this caps what is *encoded and uploaded*. The capture resolution
     /// and the `.high` session preset are untouched (`.high` is required for
     /// simultaneous photo + movie output).
-    private static let maxUploadPixels: CGFloat = 2048
+    private static let maxUploadPixels: CGFloat = 2600
 
     /// Bakes orientation into pixels, center-crops to `aspect`, caps the long
     /// edge at `maxUploadPixels`, and optionally mirrors (front camera, to
@@ -1270,7 +1282,7 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     /// upright pass at full sensor size, a `CGImage` crop, and — for the front
     /// camera — a second full-sensor pass to mirror. Folding the crop, the
     /// resize and the mirror into the pass we already had means the downscale
-    /// makes capture *cheaper*: the single pass writes a ≤2048 px bitmap
+    /// makes capture *cheaper*: the single pass writes a ≤2600 px bitmap
     /// instead of a ~4000 px one, and the front camera no longer pays for a
     /// second full-resolution render.
     private func processed(_ image: UIImage, aspect: CGFloat, mirror: Bool) -> UIImage {

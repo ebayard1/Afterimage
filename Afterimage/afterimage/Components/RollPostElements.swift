@@ -111,13 +111,32 @@ private struct CandleFlicker: ViewModifier {
                 // flame. Replaces `radius: 2 → 9`, which re-ran a Gaussian
                 // every tick. 6pt sits mid-way through the old range; the swell
                 // now reads as brightness rather than spread.
+                //
+                // `0.20 + flame * 0.40`, not `flame * 0.45`: the old animated
+                // `.shadow` ran opacity 0.20 → 0.60, and it never went out.
+                // `candle(t)`'s four sine amplitudes sum to exactly ±0.50 about
+                // a 0.5 base, so the curve spans the full 0…1 range and its
+                // deep troughs sit at or near 0. A bare `flame *` product
+                // therefore took the bloom to nothing at those troughs —
+                // and since the amber overlay is also driven by `flame`, the row
+                // lost its glow and its warmth at the same instant and fell to
+                // flat ember. Restoring the 0.20 floor and the 0.60 peak brings
+                // back the original endpoints exactly. Still a static layer with
+                // an animated opacity, so it costs nothing.
                 .background {
                     Self.bloom.mask(content)
                         .blur(radius: 6)
-                        .opacity(flame * 0.45)
+                        .opacity(0.20 + flame * 0.40)
                 }
                 // Static masked amber layer — inputs never change, so this
                 // rasterizes once and the tick only reblends it.
+                //
+                // NO floor here, deliberately: the ramp this replaced was a
+                // per-channel lerp from ember (0.83, 0.42, 0.10) to amber
+                // (1.00, 0.70, 0.28), so at flame 0 the old row really was bare
+                // ember. Fading the max-amber fill in from opacity 0 reproduces
+                // that endpoint exactly; adding a floor would make the trough
+                // warmer than the original, not restore it.
                 .overlay { Self.amber.mask(content).opacity(flame) }
         }
     }

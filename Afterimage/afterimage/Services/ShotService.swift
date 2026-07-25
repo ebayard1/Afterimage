@@ -36,15 +36,18 @@ final class ShotService {
 
     /// Quality every image this app uploads is encoded at.
     ///
-    /// 0.8, paired with the 2048 px long-edge cap baked in by
+    /// 0.85, paired with the 2600 px long-edge cap baked in by
     /// `CameraController.processed` (see `maxUploadPixels` there). Together they
-    /// put a shot on Storage at roughly 400–800 KB instead of 3–5 MB. The
-    /// 0.85 → 0.8 step is ~20% fewer bytes for a difference no one can see at
-    /// the sizes this app renders (700 px in the film strip, ≤2600 px full
-    /// screen), and fewer bytes means a faster upload and less radio-on time —
-    /// which is heat. Deliberate ceiling: don't raise it without a surface that
-    /// actually needs more.
-    nonisolated static let jpegQuality: CGFloat = 0.8
+    /// put a shot on Storage at roughly 1–1.5 MB instead of 3–5 MB.
+    ///
+    /// **Do not drop this to 0.8.** It was tried, and it fails on the slideshow:
+    /// captures are cropped to the viewfinder's ~0.581 aspect, so the SHORT edge
+    /// (≈ long × 0.581) is what the full-screen layout binds against, and it
+    /// must stay ≥ the ~1320 px panel width or the photo is magnified rather
+    /// than minified. Ringing that is invisible under a downscale becomes
+    /// visible the moment the hero surface is upscaling, and the loss is
+    /// permanent — already-uploaded shots can't be re-encoded better.
+    nonisolated static let jpegQuality: CGFloat = 0.85
 
     /// Encode off the main actor. This class is `@MainActor`, so `jpegData` ran
     /// on the main thread — a multi-megapixel encode landing right after the
@@ -115,6 +118,11 @@ final class ShotService {
                 NSLocalizedDescriptionKey: "saving shot failed: \(error.localizedDescription)"
             ])
         }
+        // This roll's film strip may be served by the cached `fetchShotURLs`
+        // fallback (it is, for any roll the `onShotCreated` backfill hasn't
+        // reached). Evict it so the card you just shot into re-reads instead of
+        // showing the pre-shot frames for the rest of the session.
+        await AlbumService.invalidateShotURLs(albumId: albumId)
     }
 
     /// Upload a video shot: the .mov file plus its poster still. `photoURL` on
@@ -178,6 +186,9 @@ final class ShotService {
                 NSLocalizedDescriptionKey: "saving shot failed: \(error.localizedDescription)"
             ])
         }
+        // Same as `upload(image:)` — the strip's cached fallback list is now
+        // one frame behind.
+        await AlbumService.invalidateShotURLs(albumId: albumId)
         // Clean up the temp recording now it's safely uploaded.
         try? FileManager.default.removeItem(at: fileURL)
     }

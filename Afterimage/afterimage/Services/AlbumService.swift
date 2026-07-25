@@ -41,10 +41,12 @@ final class AlbumService {
     /// Cloud Function, but if that list is missing (older rolls, or a backend
     /// that hasn't caught up), the cards call this so photos still appear.
     ///
-    /// Results are cached for the session (see `ShotURLCache`): the same roll
-    /// is rendered on both Rolls and Profile, and each card re-runs its
-    /// `.task(id:)` every time it reappears, so this used to be one Firestore
-    /// read per roll *per surface, per appearance*.
+    /// Results are cached (see `ShotURLCache`): the same roll is rendered on
+    /// both Rolls and Profile, and each card re-runs its `.task(id:)` every
+    /// time it reappears, so this used to be one Firestore read per roll *per
+    /// surface, per appearance*. The cache is invalidated by
+    /// `invalidateShotURLs(albumId:)` when you shoot into the roll, and ages
+    /// out after a minute so someone else's frames turn up too.
     nonisolated static func fetchShotURLs(albumId: String, limit: Int = 6) async -> [String] {
         await ShotURLCache.shared.urls(albumId: albumId, limit: limit) {
             do {
@@ -60,6 +62,18 @@ final class AlbumService {
                 return nil
             }
         }
+    }
+
+    /// Drop every cached shot-URL list for one roll, across all `limit`
+    /// variants, so the next card re-reads.
+    ///
+    /// Called by `ShotService` after a shot lands in Firestore. Without it, a
+    /// roll whose `previewURLs` hasn't been backfilled yet gets its fallback
+    /// list memoized once and then keeps showing exactly those frames for the
+    /// rest of the app session — you shoot three more and the strip never
+    /// changes, because `.task(id:)` re-runs but nothing reads Firestore again.
+    nonisolated static func invalidateShotURLs(albumId: String) async {
+        await ShotURLCache.shared.invalidate(albumId: albumId)
     }
 
     func create(
@@ -192,7 +206,7 @@ final class AlbumService {
 
 // MARK: - Session cache for the shot-URL fallback
 
-/// Memoizes `AlbumService.fetchShotURLs` for the lifetime of the process.
+/// Memoizes `AlbumService.fetchShotURLs`.
 ///
 /// An `actor` rather than a static dictionary behind an `NSLock` for two
 /// reasons: `fetchShotURLs` is `nonisolated` + `async`, so there is no lock to
@@ -201,16 +215,40 @@ final class AlbumService {
 /// *coalesce onto one in-flight read* instead of racing two identical queries
 /// — something a plain lock-guarded dictionary can't do.
 ///
-/// Size is bounded by the number of rolls the user is a member of (tens), and
-/// the entries are immutable URL lists, so there is no eviction policy.
+/// Size is bounded by the number of rolls the user is a member of (tens), so
+/// there is no size-based eviction — but entries do go stale, in two ways:
+///
+/// * **You** shoot into the roll. Handled exactly, by `invalidate(albumId:)`
+///   from `ShotService` after the write.
+/// * **Someone else** shoots into a roll you're both in. Nothing local fires,
+///   so the entry needs to age out on its own — hence `ttl`.
 private actor ShotURLCache {
     // Explicitly `nonisolated` so the (nonisolated) `fetchShotURLs` can reach
     // it without an actor hop just to read the reference. Safe: an immutable
     // `let` holding a Sendable actor.
     nonisolated static let shared = ShotURLCache()
 
-    private var cached: [String: [String]] = [:]
+    /// How long a cached list is served before the next card re-reads.
+    ///
+    /// 60s. The cache exists to coalesce the Home/Profile duplicate reads and
+    /// the repeat card appearances of a single scrolling session — both of
+    /// which happen within seconds, so a minute serves them just as well as
+    /// forever did. What it buys is a ceiling on how long a friend's new frame
+    /// can be invisible in your strip: one read per roll per minute of active
+    /// looking, instead of one per roll for the whole session.
+    private static let ttl: TimeInterval = 60
+
+    private struct Entry {
+        let urls: [String]
+        let storedAt: Date
+    }
+
+    private var cached: [String: Entry] = [:]
     private var inFlight: [String: Task<[String]?, Never>] = [:]
+    /// Bumped per album by `invalidate`. A read that was already in flight when
+    /// the invalidation landed must not write its (pre-write) result into the
+    /// cache afterwards — it compares generations before storing.
+    private var generation: [String: Int] = [:]
 
     /// - Parameter fetch: performs the read. Returns `nil` on failure, which is
     ///   never cached, so a transient network error retries on the next card.
@@ -220,18 +258,35 @@ private actor ShotURLCache {
         fetch: @Sendable @escaping () async -> [String]?
     ) async -> [String] {
         let key = "\(albumId)#\(limit)"
-        if let hit = cached[key] { return hit }
+        if let hit = cached[key], Date().timeIntervalSince(hit.storedAt) < Self.ttl {
+            return hit.urls
+        }
         if let running = inFlight[key] { return await running.value ?? [] }
 
+        let startGeneration = generation[albumId, default: 0]
         let task = Task<[String]?, Never> { await fetch() }
         inFlight[key] = task
         let result = await task.value
-        inFlight[key] = nil
+        // Identity-compared: an `invalidate` during the await may already have
+        // cleared this slot and a later caller may own it now.
+        if inFlight[key] == task { inFlight[key] = nil }
 
         // Only a non-empty read is cached. An empty result means either a
         // failure or a roll with no shots yet; both must stay retryable, and
         // the cards can't tell `[]` apart from "not loaded" anyway.
-        if let result, !result.isEmpty { cached[key] = result }
+        if let result, !result.isEmpty,
+           generation[albumId, default: 0] == startGeneration {
+            cached[key] = Entry(urls: result, storedAt: Date())
+        }
         return result ?? []
+    }
+
+    /// Evict one roll — every `limit` variant of its key, plus any read still
+    /// in flight for it (whose result is now known to predate the new shot).
+    func invalidate(albumId: String) {
+        generation[albumId, default: 0] += 1
+        let prefix = "\(albumId)#"
+        cached = cached.filter { !$0.key.hasPrefix(prefix) }
+        inFlight = inFlight.filter { !$0.key.hasPrefix(prefix) }
     }
 }
