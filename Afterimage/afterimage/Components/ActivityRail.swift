@@ -51,14 +51,23 @@ struct ActivityRail: View {
         // that exists to prove the app is live. So the bucket is driven from
         // here instead of from `wire`'s enclosing body.
         //
-        // The cost is one wakeup a minute, and it carries the same `paused:`
-        // as the marquee: a rail nobody can see does not need fresh timestamps.
+        // The cost is one wakeup a minute. It stays gated on `ambientPaused` —
+        // a rail nobody can see does not need fresh timestamps, and it re-reads
+        // the wall clock on resume, so it cannot drift.
+        //
+        // Deliberately NOT OR'd with `accessibilityReduceMotion`, unlike the pan
+        // clock nested below — this clock carries information, not decoration.
+        // Reduce Motion should stop the chips from sliding; it should not freeze
+        // what they say, or a chip would still read "2m" an hour later on the
+        // one element whose entire job is to show the app is live. Same
+        // reasoning as `DevelopingCountdown` in `AlbumDetailView`.
+        //
         // It does NOT reintroduce per-tick chip work — the 24 Hz clock is
         // nested *inside* this one, so `ChipRows` is still constructed at most
         // once a minute and still diffed by `==`. `TimelineView` is
         // layout-transparent, so wrapping both branches changes no geometry.
         TimelineView(.animation(minimumInterval: 60,
-                                paused: ambientPaused || reduceMotion)) { minuteCtx in
+                                paused: ambientPaused)) { minuteCtx in
             let minuteBucket = Int(minuteCtx.date.timeIntervalSinceReferenceDate / 60)
 
             if rowWidth > containerWidth, containerWidth > 0 {

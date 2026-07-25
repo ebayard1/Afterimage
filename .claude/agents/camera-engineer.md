@@ -37,7 +37,10 @@ and never gate the next shot.
 
 ## Image pipeline
 - Captures are center-cropped to the viewfinder box aspect, mirrored for the front camera, and
-  capped at 2048px long edge / JPEG 0.8 before upload. Video posters cap at 1080×1920.
+  capped at 2600px long edge / JPEG 0.85 before upload. Video posters cap at 1080×1920.
+  The 2600 matches `SlideshowPhoto.maxPixelSize`; the binding dimension is the SHORT edge
+  (~0.58 crop → ~1510px), which must clear the ~1320px panel width or the slideshow
+  upscales. Don't lower the cap below ~2400.
 - Poster-frame extraction and any decode must stay off the main thread.
 
 ## Verification

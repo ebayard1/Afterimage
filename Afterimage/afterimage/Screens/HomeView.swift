@@ -482,6 +482,11 @@ struct DevelopingFilmStripCard: View {
     /// frame's `midY` into the 0…1 reveal — never measured per card, which is
     /// the mistake documented in `FilmStripSection.body`.
     @Environment(\.viewportHeight) private var viewportHeight
+    /// Page + card visibility, as published by `MainTabView` and
+    /// `ambientVisibilityGate()`. The ambient clocks read it to stop ticking;
+    /// this card reads it for the same reason, to stop *warming frames* nobody
+    /// can see. It is half of the prefetch task's identity below.
+    @Environment(\.ambientMotionPaused) private var ambientPaused
     /// Photo URLs loaded directly from the roll's shots when the album's
     /// denormalized `previewURLs` list is empty (see AlbumService.fetchShotURLs).
     @State private var fallbackURLs: [String] = []
@@ -544,24 +549,45 @@ struct DevelopingFilmStripCard: View {
         // If the album has no denormalized preview list, load the shot URLs
         // directly so the sealed frames still render.
         .task(id: album.id) {
-            prefetchSealedFrames()
             guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
             fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
-            // The URLs only just arrived — warm them too.
-            prefetchSealedFrames()
+        }
+        // Prefetch gets a `.task` of its own, and is AWAITED rather than fired
+        // off detached, so the work is a child of this modifier and dies with it.
+        // That is the whole point: the feed is an eager `VStack` inside a paged
+        // `TabView`, so nothing here is ever unmounted — a detached prefetch had
+        // no owner and no way to be cancelled, and 18 rolls' worth of downloads
+        // and CoreImage bakes kept running behind the camera. Now leaving the
+        // tab, backgrounding the app, or scrolling this card away flips
+        // `ambientPaused`, which changes the task id, which cancels it.
+        //
+        // What this cancels is precisely this card's *warming*. The strip's own
+        // cells stay mounted (eager `VStack`) and keep their own `.task(id: url)`
+        // loads, which are shared with this prefetch rather than duplicated —
+        // see `FilmFrameLoader`. The process-wide cap in `FrameLoadLimiter` is
+        // what bounds those.
+        .task(id: prefetchIdentity) {
+            guard !ambientPaused else { return }
+            await FilmImageCache.prefetch(urls: prefetchURLs, tier: .sealed)
         }
     }
 
-    /// Decode this card's visible frames off the main thread before first paint.
-    /// Without it each cell discovers its own cache miss and decodes during the
-    /// flick that brought the card on screen (PERF_DIAGNOSIS §3c). One extra
-    /// frame beyond the strip's `frameCount + 1` slots covers the cell waiting
-    /// to slide in from the right.
-    private func prefetchSealedFrames() {
-        let urls = sealedShotURLs
+    /// The frames worth decoding off the main thread before first paint, rather
+    /// than letting each cell discover its own cache miss during the flick that
+    /// brought the card on screen (PERF_DIAGNOSIS §3c). One extra frame beyond
+    /// the strip's `frameCount + 1` slots covers the cell waiting to slide in
+    /// from the right.
+    private var prefetchURLs: [URL] {
+        sealedShotURLs
             .prefix(FilmStripMetrics.frameCount + 2)
             .compactMap { URL(string: $0) }
-        FilmImageCache.prefetch(urls: urls, tier: .sealed)
+    }
+
+    /// Identity of the prefetch task. Both halves have to be in it: the URLs so
+    /// that a fallback fetch re-arms the prefetch once they arrive, and the
+    /// visibility so that losing sight of this card cancels it.
+    private var prefetchIdentity: [String] {
+        ambientPaused ? [] : prefetchURLs.map(\.absoluteString)
     }
 
     // MARK: Header — title + shot count
@@ -626,23 +652,56 @@ struct DevelopingFilmStripCard: View {
             // Darkroom safe-light falloff — pure red so nothing but black/red
             // ever shows. Eases back as the frame surfaces so more is visible.
             //
-            // Fading the whole (still semi-transparent) layer is algebraically
-            // the same operation as scaling both stop opacities, which is what
-            // this used to do: multiply blending with a source of alpha α gives
-            // backdrop·(1−α) + backdrop·source·α either way. The old pair ran
-            // 0.30→0.16 and 0.60→0.38, i.e. factors of 0.53 and 0.63; one
-            // shared 0.58 is within a couple of percent of both and buys a
-            // static, cacheable gradient layer.
+            // Split into two CONCENTRIC single-hue layers rather than one
+            // two-stop gradient, because `.opacity()` is the only ramp available
+            // inside `.visualEffect` and it scales every stop by the SAME
+            // factor. The two stops need different factors — inner runs
+            // 0.30 → 0.16 (×0.533) and outer 0.60 → 0.38 (×0.633) — so no
+            // single shared factor can be right at both. The previous shared
+            // 0.58 pushed them in opposite directions at full reveal (inner to
+            // 0.174, outer to 0.348), compressing the centre-to-edge delta from
+            // 0.22 to 0.174: a 21% shallower vignette exactly when the frame is
+            // most revealed.
+            //
+            // Each layer is transparent where the other one carries the stop, so
+            // each endpoint is governed by exactly one ramp and can be exact:
+            //   • inner: 0.30 × (1 − 0.4667·r) = 0.30 − 0.14·r  → 0.30 … 0.16
+            //   • outer: 0.60 × (1 − 0.3667·r) = 0.60 − 0.22·r  → 0.60 … 0.38
+            // Both are linear in `r`, so they match the original interpolation
+            // at EVERY reveal value, not just the ends.
+            //
+            // What remains approximate: the mid-annulus. Two multiply layers
+            // compose as a product, not a sum, so halfway out the falloff sits
+            // at an effective ~0.405 alpha instead of the single gradient's
+            // 0.45 — a slightly lighter, slightly redder ring. On a frame that
+            // is `colorMultiply`'d to black-into-red anyway this is invisible,
+            // and it is the only place the two forms disagree.
+            //
+            // Cost is one extra layer, but both are STATIC and cacheable — only
+            // `opacity` animates, which is the pattern PERF_DIAGNOSIS rule 4
+            // asks for. No blur radius and no `@State` moves per scroll frame.
             RadialGradient(
                 colors: [
                     Color(red: 0.34, green: 0.0, blue: 0.0).opacity(0.30),
+                    Color(red: 0.34, green: 0.0, blue: 0.0).opacity(0.0)
+                ],
+                center: .center, startRadius: 6, endRadius: 110
+            )
+            .visualEffect { content, proxy in
+                let r = SealedReveal.progress(in: proxy, viewportHeight: vh, reduceMotion: rm)
+                return content.opacity(1 - r * 0.4667)
+            }
+            .blendMode(.multiply)
+            RadialGradient(
+                colors: [
+                    Color(red: 0.09, green: 0.0, blue: 0.0).opacity(0.0),
                     Color(red: 0.09, green: 0.0, blue: 0.0).opacity(0.60)
                 ],
                 center: .center, startRadius: 6, endRadius: 110
             )
             .visualEffect { content, proxy in
                 let r = SealedReveal.progress(in: proxy, viewportHeight: vh, reduceMotion: rm)
-                return content.opacity(1 - r * 0.42)
+                return content.opacity(1 - r * 0.3667)
             }
             .blendMode(.multiply)
             // Soft red bloom — the developing-glow signature, swelling as it
@@ -716,6 +775,9 @@ struct RevealedRollCard: View {
     let index: Int
     let onTapMembers: () -> Void
 
+    /// Page + card visibility. Gates this card's prefetch task, exactly as on
+    /// `DevelopingFilmStripCard`.
+    @Environment(\.ambientMotionPaused) private var ambientPaused
     /// Photo URLs loaded directly from the roll's shots when the album's
     /// denormalized `previewURLs` list is empty (see AlbumService.fetchShotURLs).
     @State private var fallbackURLs: [String] = []
@@ -756,24 +818,31 @@ struct RevealedRollCard: View {
         // If the album has no denormalized preview list (older rolls), load the
         // shot URLs directly so the developed frames still render.
         .task(id: album.id) {
-            prefetchStripFrames()
             guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
             fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
-            // The URLs only just arrived — warm them too.
-            prefetchStripFrames()
+        }
+        // Own task, awaited, keyed on visibility — see the long note on
+        // `DevelopingFilmStripCard`'s prefetch task for why all three matter.
+        .task(id: prefetchIdentity) {
+            guard !ambientPaused else { return }
+            await FilmImageCache.prefetch(urls: prefetchURLs, tier: .normal)
         }
     }
 
-    /// Decode this card's visible frames off the main thread before first paint,
-    /// rather than letting each cell hit the network + JPEG decoder during the
-    /// flick that brought the card on screen (PERF_DIAGNOSIS §3c). One extra
-    /// frame beyond the strip's `frameCount + 1` slots covers the cell waiting
-    /// to slide in from the right.
-    private func prefetchStripFrames() {
-        let urls = allShotURLs
+    /// The frames worth decoding off the main thread before first paint, rather
+    /// than letting each cell hit the network + JPEG decoder during the flick
+    /// that brought the card on screen (PERF_DIAGNOSIS §3c). One extra frame
+    /// beyond the strip's `frameCount + 1` slots covers the cell waiting to
+    /// slide in from the right.
+    private var prefetchURLs: [URL] {
+        allShotURLs
             .prefix(FilmStripMetrics.frameCount + 2)
             .compactMap { URL(string: $0) }
-        FilmImageCache.prefetch(urls: urls, tier: .normal)
+    }
+
+    /// URLs plus visibility — see the developing card's `prefetchIdentity`.
+    private var prefetchIdentity: [String] {
+        ambientPaused ? [] : prefetchURLs.map(\.absoluteString)
     }
 
     // MARK: Header — title + total shots + pills

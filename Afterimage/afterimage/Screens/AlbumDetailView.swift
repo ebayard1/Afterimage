@@ -82,10 +82,32 @@ struct AlbumDetailView: View {
         // up to half a minute after it actually developed. One sleep, scheduled
         // for the exact instant, closes that gap without a repeating timer —
         // and `.task` cancels it the moment the screen goes away.
+        //
+        // `revealAt` comes off the wire and is NOT trustworthy: a Timestamp
+        // written in milliseconds instead of seconds, or a `distantFuture`
+        // default left by a partial write, decodes to a date centuries out.
+        // This used to sleep `UInt64(delay * 1_000_000_000)` — and
+        // `UInt64(_: Double)` *traps* on anything out of range or NaN, which
+        // `try?` cannot catch, so one malformed roll crashed this screen on
+        // open, every time, with no way back in. `Task.sleep(for:)` takes a
+        // `Duration` and the delay is clamped below, so no arithmetic here can
+        // trap on any value Firestore can hand us.
         .task(id: album.id) {
-            let delay = album.revealAt.timeIntervalSinceNow
-            guard delay > 0 else { return }
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            // Already developed: `isRevealed` is true from the shared clock and
+            // there is nothing to wait for. Also the NaN exit — every comparison
+            // against NaN is false.
+            guard album.revealAt.timeIntervalSinceNow > 0 else { return }
+            while !Task.isCancelled {
+                let delay = album.revealAt.timeIntervalSinceNow
+                guard delay.isFinite else { return }   // ±infinite date: never fires
+                guard delay > 0 else { break }         // the moment arrived
+                // Cap each pass at an hour and re-arm. Real windows are hours to
+                // days, so this costs one extra wake per hour the screen is left
+                // open, and an absurd date just means the roll keeps waiting
+                // instead of taking the app down with it.
+                try? await Task.sleep(for: .seconds(min(delay, 3600)))
+            }
+            guard !Task.isCancelled else { return }
             revealArrived = true
         }
         // Firestore listeners don't self-remove on dealloc — every push/pop
@@ -532,14 +554,32 @@ private struct DevelopingCountdown: View {
     var body: some View {
         // `.animation(minimumInterval:paused:)` rather than `.periodic(from:by:)`:
         // `PeriodicTimelineSchedule` takes no `paused:`, and every clock in this
-        // app has to be gateable (see `AmbientMotion.swift`). A 1 s minimum
-        // interval is the same once-a-second cadence.
+        // app has to be gateable (see `AmbientMotion.swift`).
         //
         // Deliberately NOT OR'd with `accessibilityReduceMotion` — this is
         // information, not decoration. Freezing a countdown for Reduce Motion
         // would be a bug, not an accommodation.
-        TimelineView(.animation(minimumInterval: 1, paused: ambientPaused)) { context in
-            Text(Self.countdown(to: revealAt, from: context.date))
+        //
+        // Two details that a seconds counter, unlike a decorative tick, actually
+        // notices:
+        //
+        //   • `minimumInterval` is 0.5, not 1. `.animation` fires on the first
+        //     display frame AFTER the interval elapses, so a 1 s minimum really
+        //     ticks every ~1.008 s and the phase walks. Once the accumulated
+        //     drift crosses a second boundary two ticks land inside the same
+        //     integer second, the label holds for 2 s and then jumps 2 — a
+        //     visible stutter on the one number here people watch. Sampling
+        //     twice a second means the gap between samples (~0.52 s) is always
+        //     shorter than the value's 1 s lifetime, so no integer second can be
+        //     skipped or repeated. The extra wakeup is scoped to this one `Text`.
+        //
+        //   • The string comes from a freshly read `Date()`, not `context.date`.
+        //     `context.date` is the schedule's frame time, which is what carries
+        //     the drift; the wall clock does not. It also means the first tick
+        //     after `ambientPaused` releases shows the true remaining time
+        //     rather than a stale scheduled instant.
+        TimelineView(.animation(minimumInterval: 0.5, paused: ambientPaused)) { _ in
+            Text(Self.countdown(to: revealAt, from: Date()))
                 .font(.system(size: 26, weight: .bold).monospacedDigit())
                 .foregroundStyle(Palette.gold)
         }
