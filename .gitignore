@@ -11,3 +11,7 @@ functions/lib/
 
 # macOS
 .DS_Store
+
+# Claude Code — local machine state (agent definitions in .claude/agents/ ARE tracked)
+.claude/settings.local.json
+.claude/worktrees/
