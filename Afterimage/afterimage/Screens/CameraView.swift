@@ -32,7 +32,16 @@ struct CameraView: View {
     /// When true, show a close (✕) button — the camera is presented as a
     /// full-screen cover (e.g. from an album) where there's no tab bar to leave by.
     let showsCloseButton: Bool
+    /// Whether this camera is actually the thing the user is looking at.
+    /// The tab host must pass `false` while another tab is showing: a paged
+    /// TabView keeps every page mounted forever, so `onDisappear` never fires
+    /// there and the capture session would otherwise run the whole time you
+    /// browse the feed (the app's biggest heat source — PERF_DIAGNOSIS §1a).
+    /// Defaults to `true` so the full-screen-cover call sites, where SwiftUI's
+    /// own appear/disappear IS accurate, keep working unchanged.
+    let isActive: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(AuthService.self) private var auth
     @Environment(ToastCenter.self) private var toast
     @AppStorage("lastUsedAlbumId") private var lastUsedAlbumId: String = ""
@@ -74,13 +83,25 @@ struct CameraView: View {
     /// upload + Firestore listener round-trip. Rolled back if an upload
     /// fails; the live listener count wins whenever it catches up.
     @State private var optimisticShotCount = 0
+    /// The debounced `camera.stop()`. A tab flick (camera → rolls → camera)
+    /// must not churn the sensor: the stop waits ~1.5s and is cancelled if the
+    /// camera comes back first, so a quick round trip is free while actually
+    /// leaving the tab still shuts the session down.
+    @State private var pendingStop: Task<Void, Never>?
 
     /// What the counter badge shows — never behind the local action.
     private var displayedShotCount: Int { max(shotService.myShotCount, optimisticShotCount) }
 
-    init(album: Album, showsCloseButton: Bool = false) {
+    /// The AVCaptureSession runs only here: on screen AND foregrounded. The
+    /// session itself stays *configured* across stop/start (see
+    /// `CameraController.start`), so coming back is a warm restart, not a
+    /// rebuild of the inputs.
+    private var shouldRun: Bool { isActive && scenePhase == .active }
+
+    init(album: Album, showsCloseButton: Bool = false, isActive: Bool = true) {
         self.album = album
         self.showsCloseButton = showsCloseButton
+        self.isActive = isActive
     }
 
     /// Shots each member gets per roll — the "24 exposures" of the disposable.
@@ -259,8 +280,9 @@ struct CameraView: View {
         // The shell art runs under the status bar so its top edge touches the
         // very top of the screen.
         .ignoresSafeArea(edges: .top)
+        // Non-camera setup: cheap, and must happen once when the page mounts
+        // regardless of whether the sensor is allowed to run yet.
         .task {
-            await camera.start()
             if let uid = auth.uid, let albumId = album.id {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
@@ -270,7 +292,29 @@ struct CameraView: View {
                 withAnimation { showCameraCoach = true }
             }
         }
-        .onDisappear { camera.stop() }
+        // The session gate. `initial: true` covers the first appearance (in a
+        // full-screen cover `shouldRun` is already true when the view mounts).
+        .onChange(of: shouldRun, initial: true) { _, run in
+            // Either direction cancels a stop that hasn't fired yet.
+            pendingStop?.cancel()
+            pendingStop = nil
+            if run {
+                Task { await camera.start() }
+            } else {
+                pendingStop = Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    guard !Task.isCancelled else { return }
+                    camera.stop()
+                }
+            }
+        }
+        // Still correct for the cover presentation, where disappear DOES fire —
+        // and cheap when it doesn't (the pager never removes this page).
+        .onDisappear {
+            pendingStop?.cancel()
+            pendingStop = nil
+            camera.stop()
+        }
     }
 
     private var remainingShots: Int { max(0, rollCapacity - displayedShotCount) }
@@ -812,15 +856,33 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     /// saved photo matches exactly what the full-screen preview showed.
     private var pendingCropAspect: CGFloat = 0
     private var pendingMirror = false
+    /// Latest run intent, owned by `queue`. `start()` has to await permission
+    /// before it can touch the session, and a `stop()` can land inside that
+    /// window (leave the tab while the camera is still spinning up). Without
+    /// this flag the late start would win and leave the sensor running behind
+    /// a page the user already left.
+    private var wantsRunning = false
 
     func start() async {
+        // Record the intent BEFORE the permission hop, so an interleaved
+        // stop() can veto this start (see `wantsRunning`).
+        queue.async { [self] in wantsRunning = true }
         guard await requestAccess() else { return }
         // Best-effort mic — if denied, video still records (silently).
         _ = await requestMicAccess()
         await withCheckedContinuation { cont in
             queue.async { [self] in
+                guard wantsRunning else { cont.resume(); return }
+                // Configure ONCE and stay configured: `stop()` only stops the
+                // session, it never tears inputs down, so coming back to the
+                // tab is a warm restart (~fast) rather than a full rebuild.
                 if !configured { configureSession(front: false) }
-                if !session.isRunning { session.startRunning() }
+                if !session.isRunning {
+                    session.startRunning()
+                    #if DEBUG
+                    print("📷 SESSION START (configured: \(configured))")
+                    #endif
+                }
                 cont.resume()
             }
         }
@@ -878,6 +940,12 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
         await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
             queue.async { [self] in
                 guard movieOutput.isRecording else { cont.resume(returning: nil); return }
+                // Same one-resume invariant as `capturePhoto`: a second
+                // stopRecording() must not strand the first waiter.
+                if let stale = recordContinuation {
+                    recordContinuation = nil
+                    stale.resume(returning: nil)
+                }
                 recordContinuation = cont
                 movieOutput.stopRecording()
             }
@@ -897,9 +965,19 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
         return UIImage(cgImage: cg)
     }
 
+    /// Stop the sensor WITHOUT deconfiguring — inputs/outputs stay attached so
+    /// the next `start()` is a warm restart. A running session off-screen is
+    /// the app's biggest heat source, so this is called whenever the camera
+    /// stops being the visible page (debounced by the view).
     func stop() {
         queue.async { [self] in
-            if self.session.isRunning { self.session.stopRunning() }
+            self.wantsRunning = false
+            if self.session.isRunning {
+                self.session.stopRunning()
+                #if DEBUG
+                print("📷 SESSION STOP")
+                #endif
+            }
         }
     }
 
@@ -981,6 +1059,18 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     func capturePhoto(cropAspect: CGFloat) async throws -> UIImage? {
         try await withCheckedThrowingContinuation { cont in
             queue.async { [self] in
+                // INVARIANT: exactly one resume per continuation, and never
+                // overwrite an unresumed one — a dropped continuation leaves
+                // its `await` suspended forever (a hung shutter). The UI's
+                // `isUploading` flag normally prevents overlapping captures;
+                // this is the backstop if it ever doesn't.
+                if let stale = self.captureContinuation {
+                    self.captureContinuation = nil
+                    stale.resume(throwing: NSError(
+                        domain: "Afterimage.Camera", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "capture superseded"]
+                    ))
+                }
                 self.captureContinuation = cont
                 self.pendingCropAspect = cropAspect
                 self.pendingMirror = self.isFront
@@ -1091,16 +1181,27 @@ extension CameraController {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
                                  didFinishProcessingPhoto photo: AVCapturePhoto,
                                  error: Error?) {
-        if let error {
-            captureContinuation?.resume(throwing: error)
-        } else if let data = photo.fileDataRepresentation(),
-                  let image = UIImage(data: data) {
-            let cropped = processed(image, aspect: pendingCropAspect, mirror: pendingMirror)
-            captureContinuation?.resume(returning: cropped)
-        } else {
-            captureContinuation?.resume(returning: nil)
+        // AVFoundation calls this on its OWN callback thread, while
+        // `capturePhoto` sets the continuation and the pending crop/mirror on
+        // `queue`. Hop onto `queue` before touching any of that state — this
+        // used to be a plain cross-thread read/write of `captureContinuation`.
+        // The JPEG data is captured here (the AVCapturePhoto must be read
+        // inside the callback); the crop/mirror work then runs on the session
+        // queue, which is off the main thread either way.
+        let data = photo.fileDataRepresentation()
+        queue.async { [self] in
+            guard let cont = captureContinuation else { return }
+            captureContinuation = nil
+            if let error {
+                cont.resume(throwing: error)
+            } else if let data, let image = UIImage(data: data) {
+                cont.resume(returning: processed(image,
+                                                 aspect: pendingCropAspect,
+                                                 mirror: pendingMirror))
+            } else {
+                cont.resume(returning: nil)
+            }
         }
-        captureContinuation = nil
     }
 }
 

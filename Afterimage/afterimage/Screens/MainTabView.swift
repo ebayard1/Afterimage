@@ -11,6 +11,13 @@ import SwiftUI
 struct MainTabView: View {
     enum Tab: Int, Hashable, CaseIterable { case rolls, camera, profile }
     @State private var selectedTab: Tab = .rolls
+    // A paged TabView mounts ALL three pages at once and never removes the
+    // offscreen ones, so the camera page's `onDisappear` never fires. Without
+    // an explicit signal the 1080p capture session would keep running while
+    // you browse the feed — the single largest source of device heat in the
+    // app. `isActive` is that signal: the camera only runs when it is the
+    // selected page AND the app is foregrounded.
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
@@ -27,7 +34,7 @@ struct MainTabView: View {
                     .safeAreaPadding(.top, topInset)
                     .tag(Tab.rolls)
 
-                CameraTabView()
+                CameraTabView(isActive: selectedTab == .camera && scenePhase == .active)
                     .tag(Tab.camera)
 
                 ProfileView()
