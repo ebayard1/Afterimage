@@ -9,8 +9,16 @@ import SwiftUI
 /// up to your scroll. Shorter durations on rapidly-repeated elements *feel*
 /// faster even though more total work happens.
 ///
-/// Respects `accessibilityReduceMotion` — drops the transform + blur, keeps
-/// opacity so the entry signal is still visible.
+/// Opacity + offset only. This used to also animate `blur(radius: 4 → 0)`,
+/// which meant every card entering the viewport ran a full-card Gaussian pass
+/// — an offscreen render whose radius changed every frame, so nothing cached.
+/// Worst on Profile's `LazyVStack`, where cards are instantiated mid-flick and
+/// the blur spike landed on the exact frames that were already tightest.
+/// Transform + opacity are the only per-frame-cheap properties (PERF_DIAGNOSIS
+/// §3d); the fade-up reads the same without the softening.
+///
+/// Respects `accessibilityReduceMotion` — drops the transform, keeps opacity so
+/// the entry signal is still visible.
 struct ScrollFadeIn<Content: View>: View {
     var delay: Double = 0
     var distance: CGFloat = 24
@@ -23,7 +31,6 @@ struct ScrollFadeIn<Content: View>: View {
         content()
             .opacity(appeared ? 1 : 0)
             .offset(y: (reduceMotion || appeared) ? 0 : distance)
-            .blur(radius: (reduceMotion || appeared) ? 0 : 4)
             .onAppear {
                 withAnimation((reduceMotion ? Motion.crisp : Motion.expressive).delay(delay)) {
                     appeared = true

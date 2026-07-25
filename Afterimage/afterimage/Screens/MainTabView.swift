@@ -67,6 +67,11 @@ struct MainTabView: View {
             // system status bar (clock / battery / signal) so nothing floats
             // over the shell. Rolls and Profile keep it.
             .statusBarHidden(selectedTab == .camera)
+            // Measure the window height ONCE, here, and publish it. Scroll-
+            // position effects downstream (the sealed-negative reveal) need it
+            // to normalize a card's midY; measuring per card is the thing that
+            // broke the strip before. See `ScrollGeometry.swift`.
+            .environment(\.viewportHeight, fullHeight)
             .onChange(of: selectedTab) { _, _ in
                 UISelectionFeedbackGenerator().selectionChanged()
             }

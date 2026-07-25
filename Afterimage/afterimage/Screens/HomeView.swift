@@ -449,14 +449,15 @@ struct AlbumRow: View {
 }
 
 // MARK: - DEVELOPING: film strip with red safe-light glow + live ticker
-
-// Publishes a developing card's vertical centre (global space) so the sealed
-// frames can brighten/dim as the card travels through the viewport — a slow
-// "safe-light sweeping the negatives" shade that responds to scroll.
-private struct DevelopingGlowKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
+//
+// The sealed frames shade with the card's position on screen — a slow
+// "safe-light sweeping the negatives" that responds to scroll. That used to be
+// a `GeometryReader` → `DevelopingGlowKey` preference → `@State scrollGlow`
+// loop, i.e. a state write on EVERY scroll frame, which invalidated the whole
+// card body and re-ran a per-image animated blur radius underneath it
+// (PERF_DIAGNOSIS §3a — the single biggest cause of the feed's scroll
+// choppiness). It is now read inside `.visualEffect`, which is evaluated
+// during rendering and invalidates nothing. See `SealedReveal`.
 
 struct DevelopingFilmStripCard: View {
     let album: Album
@@ -464,10 +465,10 @@ struct DevelopingFilmStripCard: View {
     let onTapMembers: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// 0…1 darkroom-glow level driven by the card's position on screen. Peaks
-    /// when the card is centred, falls off toward the top/bottom edges, so the
-    /// sealed frames gently glow brighter then dimmer as you scroll past them.
-    @State private var scrollGlow: Double = 0.35
+    /// Window height, published once by `MainTabView`. Used to normalize a
+    /// frame's `midY` into the 0…1 reveal — never measured per card, which is
+    /// the mistake documented in `FilmStripSection.body`.
+    @Environment(\.viewportHeight) private var viewportHeight
     /// Photo URLs loaded directly from the roll's shots when the album's
     /// denormalized `previewURLs` list is empty (see AlbumService.fetchShotURLs).
     @State private var fallbackURLs: [String] = []
@@ -527,31 +528,27 @@ struct DevelopingFilmStripCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Palette.border.opacity(0.7), lineWidth: 1)
         )
-        // Report position so the sealed frames can shade with scroll. Frames stay
-        // put (no horizontal pan) — only their glow brightness tracks the scroll.
-        .background(
-            GeometryReader { g in
-                Color.clear.preference(
-                    key: DevelopingGlowKey.self,
-                    value: g.frame(in: .global).midY
-                )
-            }
-        )
-        .onPreferenceChange(DevelopingGlowKey.self) { midY in
-            // Hold a steady mid-glow when motion is reduced.
-            guard !reduceMotion else { scrollGlow = 0.5; return }
-            let screenH = UIScreen.main.bounds.height
-            // 0 when the card sits at the bottom of the screen → 1 as it rides
-            // to the top. Scrolling DOWN lifts the card up, so this rises with
-            // scroll: the negative barely brightens the further down you scroll.
-            scrollGlow = min(max(1 - midY / screenH, 0), 1)
-        }
         // If the album has no denormalized preview list, load the shot URLs
         // directly so the sealed frames still render.
         .task(id: album.id) {
+            prefetchSealedFrames()
             guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
             fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
+            // The URLs only just arrived — warm them too.
+            prefetchSealedFrames()
         }
+    }
+
+    /// Decode this card's visible frames off the main thread before first paint.
+    /// Without it each cell discovers its own cache miss and decodes during the
+    /// flick that brought the card on screen (PERF_DIAGNOSIS §3c). One extra
+    /// frame beyond the strip's `frameCount + 1` slots covers the cell waiting
+    /// to slide in from the right.
+    private func prefetchSealedFrames() {
+        let urls = sealedShotURLs
+            .prefix(FilmStripMetrics.frameCount + 2)
+            .compactMap { URL(string: $0) }
+        FilmImageCache.prefetch(urls: urls, tier: .sealed)
     }
 
     // MARK: Header — title + shot count
@@ -592,42 +589,61 @@ struct DevelopingFilmStripCard: View {
     /// A single undeveloped negative, rendered in pure black-and-red: the real
     /// sealed shot stripped to greyscale, tinted red, and heavily blurred so you
     /// can *barely* make out a shape. As the card travels UP the screen (i.e. as
-    /// you scroll down the feed) `scrollGlow` rises and the frame appears to
+    /// you scroll down the feed) the reveal rises and the frame appears to
     /// "surface from the developer": the blur softens, the image lifts out of the
     /// dark, and the red safe-light loosens its grip — but it never fully resolves,
     /// always staying greyscale-into-red.
+    ///
+    /// The greyscale + both blur levels are baked at decode time and crossfaded
+    /// inside `SealedFilmFrameImage`; the two glow layers below carry the rest
+    /// of the reveal. Every scroll-position read here happens in `.visualEffect`,
+    /// which runs during rendering and never invalidates a body — see the note
+    /// above `DevelopingFilmStripCard`.
     @ViewBuilder
     private func sealedFrame(url: URL?) -> some View {
-        // Eased reveal so the emergence feels organic rather than linear.
-        let reveal = scrollGlow * scrollGlow * (3 - 2 * scrollGlow)   // smoothstep
+        // Locals: the `visualEffect` closures are @Sendable and must not
+        // capture `self`.
+        let vh = viewportHeight
+        let rm = reduceMotion
         ZStack {
             Color.black
             if let url {
-                // Strip ALL colour to greyscale, then multiply by red so the
-                // only hues in the sealed frame are black → red.
-                FilmFrameImage(url: url)
-                    .saturation(0)                                       // greyscale
-                    .blur(radius: 11 - reveal * 7)                       // 11 sealed → 4 as it surfaces
-                    .brightness(-0.34 + reveal * 0.30)                  // lifts out of the dark
-                    .contrast(1.0 + reveal * 0.25)                      // shape firms up
-                    .opacity(0.85 + reveal * 0.15)
-                    .colorMultiply(Color(red: 0.80, green: 0.05, blue: 0.04))   // tint the grey image red
+                SealedFilmFrameImage(url: url)
             }
             // Darkroom safe-light falloff — pure red so nothing but black/red
             // ever shows. Eases back as the frame surfaces so more is visible.
+            //
+            // Fading the whole (still semi-transparent) layer is algebraically
+            // the same operation as scaling both stop opacities, which is what
+            // this used to do: multiply blending with a source of alpha α gives
+            // backdrop·(1−α) + backdrop·source·α either way. The old pair ran
+            // 0.30→0.16 and 0.60→0.38, i.e. factors of 0.53 and 0.63; one
+            // shared 0.58 is within a couple of percent of both and buys a
+            // static, cacheable gradient layer.
             RadialGradient(
                 colors: [
-                    Color(red: 0.34, green: 0.0, blue: 0.0).opacity(0.30 - reveal * 0.14),
-                    Color(red: 0.09, green: 0.0, blue: 0.0).opacity(0.60 - reveal * 0.22)
+                    Color(red: 0.34, green: 0.0, blue: 0.0).opacity(0.30),
+                    Color(red: 0.09, green: 0.0, blue: 0.0).opacity(0.60)
                 ],
                 center: .center, startRadius: 6, endRadius: 110
             )
+            .visualEffect { content, proxy in
+                let r = SealedReveal.progress(in: proxy, viewportHeight: vh, reduceMotion: rm)
+                return content.opacity(1 - r * 0.42)
+            }
             .blendMode(.multiply)
-            // Soft red bloom — the developing-glow signature, swelling as it surfaces.
+            // Soft red bloom — the developing-glow signature, swelling as it
+            // surfaces. Painted at its MAX opacity (0.28) and faded back by the
+            // reveal, which reproduces the old 0.16 → 0.28 ramp exactly while
+            // leaving the fill and its fixed 16pt blur constant.
             Circle()
-                .fill(Color(red: 0.55, green: 0.0, blue: 0.0).opacity(0.16 + reveal * 0.12))
+                .fill(Color(red: 0.55, green: 0.0, blue: 0.0).opacity(0.28))
                 .frame(width: 56, height: 56)
                 .blur(radius: 16)
+                .visualEffect { content, proxy in
+                    let r = SealedReveal.progress(in: proxy, viewportHeight: vh, reduceMotion: rm)
+                    return content.opacity(0.571 + r * 0.429)
+                }
         }
     }
 
@@ -729,9 +745,24 @@ struct RevealedRollCard: View {
         // If the album has no denormalized preview list (older rolls), load the
         // shot URLs directly so the developed frames still render.
         .task(id: album.id) {
+            prefetchStripFrames()
             guard album.stripPreviewURLs.isEmpty, let id = album.id else { return }
             fallbackURLs = await AlbumService.fetchShotURLs(albumId: id)
+            // The URLs only just arrived — warm them too.
+            prefetchStripFrames()
         }
+    }
+
+    /// Decode this card's visible frames off the main thread before first paint,
+    /// rather than letting each cell hit the network + JPEG decoder during the
+    /// flick that brought the card on screen (PERF_DIAGNOSIS §3c). One extra
+    /// frame beyond the strip's `frameCount + 1` slots covers the cell waiting
+    /// to slide in from the right.
+    private func prefetchStripFrames() {
+        let urls = allShotURLs
+            .prefix(FilmStripMetrics.frameCount + 2)
+            .compactMap { URL(string: $0) }
+        FilmImageCache.prefetch(urls: urls, tier: .normal)
     }
 
     // MARK: Header — title + total shots + pills
