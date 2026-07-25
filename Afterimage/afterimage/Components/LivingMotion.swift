@@ -52,7 +52,8 @@ struct LivingSprocketStrip: View {
             } else {
                 // Standalone mode: drift on a slow private clock (used by the
                 // developing card, which has no panning frames to sync to).
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+                // 20fps: the drift is ~6px/s, well under 1px per tick.
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: false)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let phase = (t.truncatingRemainder(dividingBy: period)) / period   // 0…1
                     GeometryReader { geo in
@@ -96,11 +97,13 @@ struct LivingFilmGrain: View {
     var opacity: Double = 0.045
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { context in
+        // 8fps still twinkles convincingly; every card on screen runs one of
+        // these Canvases, so the tick rate is a direct feed-jank lever.
+        TimelineView(.animation(minimumInterval: 1.0 / 8.0, paused: false)) { context in
             Canvas { ctx, size in
                 // Seed from the current time bucket so the grain twinkles
                 // deterministically across the population of specks.
-                let bucket = Int(context.date.timeIntervalSinceReferenceDate * 12)
+                let bucket = Int(context.date.timeIntervalSinceReferenceDate * 8)
                 var rng = SimpleSplitMix(seed: bucket)
                 for _ in 0..<density {
                     let x = CGFloat(rng.next01()) * size.width
@@ -131,7 +134,9 @@ struct WarmthFlicker: ViewModifier {
     var floor: Double = 0.93
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: false)) { context in
+        // 10fps is imperceptible for a multi-second sine but halves the tick
+        // load — this modifier is applied to MANY headlines per screen.
+        TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let cycle = (sin(t * (2 * .pi / period)) + 1) / 2  // 0…1
             let alpha = floor + (1.0 - floor) * cycle

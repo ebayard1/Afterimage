@@ -228,12 +228,6 @@ struct ProfileView: View {
                 .accessibilityLabel("\(friendCount) friends — open list")
                 .padding(.top, 2)
 
-                if let email = auth.email, !email.isEmpty {
-                    Text(email)
-                        .font(.custom("Menlo", size: 10)).tracking(0.5)
-                        .foregroundStyle(Palette.textTertiary)
-                        .padding(.top, 2)
-                }
             }
             Spacer()
         }

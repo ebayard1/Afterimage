@@ -30,7 +30,6 @@ struct RollSlideshowView: View {
 
     @State private var index: Int = 0
     @State private var prevIndex: Int = 0             // outgoing photo, drawn beneath
-    @State private var frontOpacity: CGFloat = 1      // incoming photo fades 0→1 over it
     @State private var progress: CGFloat = 0          // 0…1 fill of current bar
     @State private var isPaused: Bool = false
     @State private var timer: Timer?
@@ -56,9 +55,11 @@ struct RollSlideshowView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                // Two-layer crossfade: the outgoing photo stays fully opaque
-                // underneath while the incoming photo fades in on top — so the
-                // transition never passes through black.
+                // Two layers, hard cut: the outgoing frame stays fully opaque
+                // underneath ONLY while the incoming one is still loading, so
+                // the cut never passes through black. The moment the incoming
+                // photo has actually rendered (`onLoaded`), the underlay is
+                // dropped — it can never show around or through the new frame.
                 if prevIndex != index,
                    prevIndex >= 0, prevIndex < shots.count,
                    let prevURL = URL(string: shots[prevIndex].photoURL) {
@@ -72,11 +73,16 @@ struct RollSlideshowView: View {
                         SlideshowVideo(url: vurl) { goNext() }
                             .id(index)
                             .ignoresSafeArea()
-                            .opacity(frontOpacity)
                     } else if let url = URL(string: shot.photoURL) {
-                        SlideshowPhoto(url: url, progress: progress)
-                            .ignoresSafeArea()
-                            .opacity(frontOpacity)
+                        // `.id(index)` gives each frame a FRESH view: no stale
+                        // image state from the previous shot can linger while
+                        // the new one loads (the "same photo but the indicator
+                        // moved" glitch).
+                        SlideshowPhoto(url: url, progress: progress) {
+                            prevIndex = index
+                        }
+                        .id(index)
+                        .ignoresSafeArea()
                     }
                 }
 
@@ -99,12 +105,7 @@ struct RollSlideshowView: View {
                     metaRow
                         .padding(.horizontal, 14)
                         .padding(.top, 10)
-                    // Film-roll perforations bracketing the frame — the photo
-                    // reads as a single running negative as you flip through.
-                    filmEdge
-                        .padding(.top, 12)
                     Spacer()
-                    filmEdge
                     if isPaused { pausedPill.padding(.top, 12).padding(.bottom, 4) }
                     captionBlock
                         .padding(.horizontal, 22)
@@ -132,8 +133,12 @@ struct RollSlideshowView: View {
             if let id = album.id {
                 shotService.startListening(albumId: id, currentUserId: auth.uid ?? "")
             }
+            preloadRoll()
             startTimer()
         }
+        // Real mode: the shots arrive async from the listener — preload the
+        // moment the roll is actually known (and again if it grows).
+        .onChange(of: shots.count) { _, _ in preloadRoll() }
         .onDisappear {
             stopTimer()
         }
@@ -194,14 +199,6 @@ struct RollSlideshowView: View {
                 .shadow(color: .black.opacity(0.6), radius: 4, y: 1)
                 .id(index)
         }
-    }
-
-    /// A single drifting 35mm perforation band — used top and bottom to frame
-    /// the slideshow photo in "running film" chrome.
-    private var filmEdge: some View {
-        LivingSprocketStrip(bandBackground: .black.opacity(0.78))
-            .overlay(Rectangle().fill(Palette.gold.opacity(0.10)).frame(height: 1), alignment: .top)
-            .overlay(Rectangle().fill(Palette.gold.opacity(0.10)).frame(height: 1), alignment: .bottom)
     }
 
     private var pausedPill: some View {
@@ -324,7 +321,21 @@ struct RollSlideshowView: View {
         prevIndex = index
         index = newIndex
         progress = 0
-        frontOpacity = 1   // instant — hard cut
+    }
+
+    /// Warm the cache with EVERY photo on the roll (story-style, like
+    /// Snapchat preloading a whole story) so tapping forward/back is always
+    /// an instant cut — never "the bar moved but the photo didn't".
+    private func preloadRoll() {
+        for shot in shots {
+            guard let url = URL(string: shot.photoURL),
+                  FilmImageCache.shared.object(forKey: url as NSURL) == nil else { continue }
+            Task.detached(priority: .utility) {
+                guard let (data, _) = try? await URLSession.shared.data(from: url),
+                      let img = FilmImageCache.decodeDownsampled(data) else { return }
+                FilmImageCache.insert(img, for: url)
+            }
+        }
     }
 
     private func dismissSlideshow() {
@@ -413,6 +424,9 @@ private struct PlayerLayerView: UIViewRepresentable {
 private struct SlideshowPhoto: View {
     let url: URL?
     let progress: CGFloat
+    /// Fired once the image is actually on screen — the caller uses it to drop
+    /// the outgoing frame drawn beneath this one.
+    var onLoaded: (() -> Void)? = nil
 
     @State private var image: UIImage?
 
@@ -423,6 +437,9 @@ private struct SlideshowPhoto: View {
         GeometryReader { geo in
             ZStack {
                 if let img = image {
+                    // Opaque backing: a photo that doesn't fill the screen
+                    // letterboxes onto black — never onto the previous frame.
+                    Color.black
                     if img.size.width > img.size.height {
                         landscape(img, in: geo.size)
                     } else {
@@ -475,14 +492,14 @@ private struct SlideshowPhoto: View {
     private func load() async {
         guard let url else { await MainActor.run { image = nil }; return }
         if let cached = FilmImageCache.shared.object(forKey: url as NSURL) {
-            await MainActor.run { image = cached }
+            await MainActor.run { image = cached; onLoaded?() }
             return
         }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            if let img = UIImage(data: data) {
-                FilmImageCache.shared.setObject(img, forKey: url as NSURL)
-                await MainActor.run { image = img }
+            if let img = FilmImageCache.decodeDownsampled(data) {
+                FilmImageCache.insert(img, for: url)
+                await MainActor.run { image = img; onLoaded?() }
             }
         } catch {
             // leave placeholder

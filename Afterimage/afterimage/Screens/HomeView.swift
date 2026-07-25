@@ -69,7 +69,8 @@ struct HomeView: View {
                 // Ambient sunrise wash that breathes — same metaphor as the
                 // detail surfaces, so the whole app shares a single living
                 // backdrop instead of going neutral in the feed.
-                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: false)) { context in
+                // 12fps: an 8.4s-period pulse doesn't need 24 ticks a second.
+                TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let pulse = (sin(t * (2 * .pi / 8.4)) + 1) / 2
                     RadialGradient(
@@ -516,7 +517,17 @@ struct DevelopingFilmStripCard: View {
             // 0 when the card sits at the bottom of the screen → 1 as it rides
             // to the top. Scrolling DOWN lifts the card up, so this rises with
             // scroll: the negative barely brightens the further down you scroll.
-            scrollGlow = min(max(1 - midY / screenH, 0), 1)
+            //
+            // QUANTIZED to 1/24 steps: `scrollGlow` drives a live Gaussian
+            // blur + brightness/contrast chain on every sealed frame, and a
+            // continuously-changing radius forces that whole filter stack to
+            // re-render on EVERY scroll frame — one of the biggest sources of
+            // feed jank. Stepping it means the expensive re-render happens a
+            // couple dozen times across a full screen travel instead of every
+            // single frame, and the eased look is visually identical.
+            let raw = min(max(1 - midY / screenH, 0), 1)
+            let stepped = (raw * 24).rounded() / 24
+            if stepped != scrollGlow { scrollGlow = stepped }
         }
         // If the album has no denormalized preview list, load the shot URLs
         // directly so the sealed frames still render.
@@ -803,18 +814,36 @@ struct AlbumMemberAvatar: View {
 
     var body: some View {
         Group {
+            // The current user gets their REAL profile photo like everyone
+            // else — the gold person glyph is only the no-photo fallback.
             if uid == users.currentProfile?.id {
-                ZStack {
-                    Circle().fill(Palette.gold.opacity(0.25))
-                    Image(systemName: "person.fill")
-                        .font(.system(size: size * 0.45))
-                        .foregroundStyle(Palette.gold)
+                if let urlStr = users.currentProfile?.photoURL,
+                   let url = URL(string: urlStr) {
+                    photoAvatar(url)
+                } else {
+                    ZStack {
+                        Circle().fill(Palette.gold.opacity(0.25))
+                        Image(systemName: "person.fill")
+                            .font(.system(size: size * 0.45))
+                            .foregroundStyle(Palette.gold)
+                    }
                 }
             } else {
                 realAvatar
             }
         }
         .frame(width: size, height: size)
+    }
+
+    private func photoAvatar(_ url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let img): img.resizable().scaledToFill()
+            default: Palette.surface
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 
     @ViewBuilder

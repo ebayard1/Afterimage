@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// Horizontal "newsstand ticker" of friend activity that sits between the
 /// Rolls feed header and the developing section. Driven by the live activity
@@ -7,18 +8,37 @@ struct ActivityRail: View {
     let events: [ActivityEvent]
     var onTapEvent: (ActivityEvent) -> Void = { _ in }
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Which chip the ticker is parked on — advances on a timer so the rail
+    /// "reads out" the wire on its own; a manual drag still works.
+    @State private var tickerIndex = 0
+    private let tickerTimer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(events.enumerated()), id: \.element.id) { idx, ev in
-                        ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
-                            chip(ev)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(events.enumerated()), id: \.element.id) { idx, ev in
+                            ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
+                                chip(ev)
+                            }
+                            .id(idx)
                         }
                     }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
+                .onReceive(tickerTimer) { _ in
+                    // Auto-advance through the updates, wrapping back to the
+                    // start — a slow newsstand ticker. Static under Reduce
+                    // Motion or when there's nothing to cycle through.
+                    guard !reduceMotion, events.count > 1 else { return }
+                    tickerIndex = (tickerIndex + 1) % events.count
+                    withAnimation(.easeInOut(duration: 0.7)) {
+                        proxy.scrollTo(tickerIndex, anchor: .leading)
+                    }
+                }
             }
         }
         .padding(.vertical, 10)

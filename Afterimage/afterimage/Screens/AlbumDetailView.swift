@@ -6,9 +6,10 @@ struct AlbumDetailView: View {
     @Environment(AuthService.self) private var auth
     @Environment(UserService.self) private var users
     @Environment(ToastCenter.self) private var toast
+    @Environment(TabRouter.self) private var tabRouter
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("lastUsedAlbumId") private var lastUsedAlbumId: String = ""
     @State private var shotService = ShotService()
-    @State private var showCamera = false
     @State private var selectedShotIndex: Int?
     @State private var showShare = false
     @State private var showSettings = false
@@ -62,15 +63,6 @@ struct AlbumDetailView: View {
             if let uid = auth.uid, let albumId = album.id {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
-        }
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraView(album: album, showsCloseButton: true)
-                // Pure black behind the shell, matching the camera tab.
-                .background(Color.black.ignoresSafeArea())
-                .environment(auth)
-                .environment(toast)
-                // Camera mode hides the status bar here too, matching the tab.
-                .statusBarHidden(true)
         }
         .fullScreenCover(item: Binding(
             get: { selectedShotIndex.map { IndexBox(value: $0) } },
@@ -229,7 +221,14 @@ struct AlbumDetailView: View {
                 .padding(.top, 6)
             }
             Spacer()
-            Button { showCamera = true } label: {
+            // Sends the user to the ONE real camera page (the camera tab),
+            // loaded with this roll — no separate camera copy is presented.
+            Button {
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                lastUsedAlbumId = album.id ?? ""
+                dismiss()
+                withAnimation(Motion.crisp) { tabRouter.selected = .camera }
+            } label: {
                 HStack {
                     Image(systemName: "camera.fill")
                     Text("OPEN CAMERA")

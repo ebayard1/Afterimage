@@ -29,10 +29,6 @@ import UIKit
 // pixel space and scaled with it, so the layout is exact at every size.
 struct CameraView: View {
     let album: Album
-    /// When true, show a close (✕) button — the camera is presented as a
-    /// full-screen cover (e.g. from an album) where there's no tab bar to leave by.
-    let showsCloseButton: Bool
-    @Environment(\.dismiss) private var dismiss
     @Environment(AuthService.self) private var auth
     @Environment(ToastCenter.self) private var toast
     @AppStorage("lastUsedAlbumId") private var lastUsedAlbumId: String = ""
@@ -42,6 +38,9 @@ struct CameraView: View {
     @State private var showConfirmation = false
     @State private var flashOn: Bool = false
     @State private var usingFront: Bool = false
+    /// True while the front/back sensor swap is in flight — the viewfinder
+    /// blacks out for the swap so the two feeds are never visible blended.
+    @State private var isFlipping = false
     /// Focus ring position, in the viewfinder's own coordinate space.
     @State private var focusIndicator: CGPoint?
     @AppStorage("hasSeenCameraCoach") private var hasSeenCameraCoach = false
@@ -57,6 +56,13 @@ struct CameraView: View {
     /// for one beat before settling on its rest frame (On-rest → On-pressed →
     /// Off-pressed → Off-rest, and the reverse when toggling back).
     @State private var flashSettleFrame: String?
+    /// Flip press cycle — same strategy as the flash: the pressed frame
+    /// lingers one beat (90ms) after release before settling back to rest,
+    /// so the button reads as a real mechanical press, not a flicker.
+    @State private var flipSettleFrame: String?
+    /// Shutter photo tap — same settle beat: pressed face holds 90ms after
+    /// the finger lifts before popping back out.
+    @State private var shutterSettle = false
     /// Shutter hold: RecordPressed shows for one beat when recording starts,
     /// then settles on the full red RecordRest face for the recording.
     @State private var recordFaceSettled = false
@@ -70,11 +76,6 @@ struct CameraView: View {
 
     /// What the counter badge shows — never behind the local action.
     private var displayedShotCount: Int { max(shotService.myShotCount, optimisticShotCount) }
-
-    init(album: Album, showsCloseButton: Bool = false) {
-        self.album = album
-        self.showsCloseButton = showsCloseButton
-    }
 
     /// Shots each member gets per roll — the "24 exposures" of the disposable.
     private let rollCapacity = 24
@@ -177,14 +178,29 @@ struct CameraView: View {
                         }
                     }
 
-                    // Flip: 2 frames — rest, pressed-in while the thumb is down.
-                    frameButton(rest: "FlipRest", pressed: "FlipPressed",
+                    // Flip: same press strategy as the flash — pressed frame
+                    // holds one beat after release before settling to rest.
+                    frameButton(rest: flipSettleFrame ?? "FlipRest", pressed: "FlipPressed",
                                 center: Shell.flipCenter, diameter: Shell.flipDiameter,
                                 scale: s, originX: originX,
                                 label: usingFront ? "Switch to rear camera" : "Switch to front camera",
                                 hint: "Flips between front and rear cameras") {
                         usingFront.toggle()
-                        Task { await camera.flip(toFront: usingFront) }
+                        flipSettleFrame = "FlipPressed"
+                        Task {
+                            try? await Task.sleep(nanoseconds: 90_000_000)
+                            flipSettleFrame = nil
+                        }
+                        Task {
+                            // Black out the glass for the sensor swap — the
+                            // outgoing and incoming feeds must never blend.
+                            withAnimation(.easeIn(duration: 0.08)) { isFlipping = true }
+                            await camera.flip(toFront: usingFront)
+                            // Give the new sensor a beat to deliver frames
+                            // before lifting the blackout.
+                            try? await Task.sleep(nanoseconds: 250_000_000)
+                            withAnimation(.easeOut(duration: 0.25)) { isFlipping = false }
+                        }
                     }
 
                     // REC lamp: winks on for a beat on photo capture; blinks on
@@ -203,10 +219,6 @@ struct CameraView: View {
                 // sits to its right on the same line.
                 counterBadge
                     .position(x: 86, y: Shell.flashCenter.y * s)
-                if showsCloseButton {
-                    closeButton
-                        .position(x: 180, y: Shell.flashCenter.y * s)
-                }
 
                 if showCameraCoach {
                     CoachMarkOverlay(surface: .camera) {
@@ -236,8 +248,7 @@ struct CameraView: View {
 
     private var remainingShots: Int { max(0, rollCapacity - displayedShotCount) }
 
-    // MARK: Top-left chrome — the frame counter in a small rounded black
-    // badge, plus the close button when presented as a full-screen cover.
+    // MARK: Top-left chrome — the frame counter in a small rounded black badge.
 
     /// Phosphor green used for the frame counter and its glow.
     private let counterGreen = Color(red: 0.36, green: 0.96, blue: 0.46)
@@ -256,28 +267,15 @@ struct CameraView: View {
             .accessibilityLabel("\(displayedShotCount) of \(rollCapacity) shots taken on this roll")
     }
 
-    private var closeButton: some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-            camera.stop()
-            dismiss()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(9)
-                .background(.black.opacity(0.45))
-                .clipShape(Circle())
-        }
-        .pressEffect()
-        .accessibilityLabel("Close camera")
-    }
-
     // MARK: Viewfinder — everything visual stays inside the white box.
 
     private func viewfinder(box: CGRect, scale s: CGFloat) -> some View {
         ZStack {
             CameraPreviewView(controller: camera)
+
+            // Flip blackout — covers the front/back sensor swap so the two
+            // feeds never show blended; reads as a mechanical viewfinder blink.
+            if isFlipping { Color.black.transition(.opacity) }
 
             if let p = focusIndicator {
                 Circle()
@@ -420,7 +418,7 @@ struct CameraView: View {
     /// (steady, lamp blinking) → back to rest on release.
     private var shutterFrameName: String {
         if isRecording { return recordFaceSettled ? "RecordRest" : "RecordPressed" }
-        if isPressingShutter { return "ShutterPressed" }
+        if isPressingShutter || shutterSettle { return "ShutterPressed" }
         return "ShutterRest"
     }
 
@@ -435,6 +433,8 @@ struct CameraView: View {
             // The frame art is ALWAYS drawn over the shell.
             Image(shutterFrameName)
                 .resizable().scaledToFit()
+                // Same hard cut as the small buttons — never crossfade frames.
+                .transaction { $0.animation = nil }
                 .frame(width: faceD, height: faceD)
         }
         .frame(width: d, height: d)
@@ -487,6 +487,13 @@ struct CameraView: View {
                 if isRecording {
                     finishRecording()
                 } else {
+                    // Settle beat (flash strategy): the pressed face holds
+                    // 90ms after the finger lifts before popping back out.
+                    shutterSettle = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 90_000_000)
+                        shutterSettle = false
+                    }
                     guard !isUploading, remainingShots > 0 else { return }
                     capture()
                 }
@@ -668,6 +675,11 @@ private struct FrameSwapButtonStyle: ButtonStyle {
         Image(configuration.isPressed ? pressed : rest)
             .resizable()
             .scaledToFit()
+            // HARD cut between frames. Without this, SwiftUI crossfades the
+            // rest/pressed art (isPressed changes animate implicitly) — both
+            // glyphs show blended mid-fade, which read as a "mirror image"
+            // ghost behind the icon on device.
+            .transaction { $0.animation = nil }
             .frame(width: diameter, height: diameter)
             // Opaque black backing disc: doubles as the constant hit target
             // and guarantees the shell under the button can never peek

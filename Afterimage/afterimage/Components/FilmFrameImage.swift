@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 /// Process-wide cache for decoded film-strip frames, keyed by URL.
 ///
@@ -12,8 +13,39 @@ enum FilmImageCache {
     static let shared: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
         c.countLimit = 240          // plenty for several full rolls on screen
+        // Hard byte ceiling. Full-capture photos decoded at native resolution
+        // are 20-45MB EACH as bitmaps — 240 of them is gigabytes, which is
+        // exactly the kind of memory pressure that makes the whole app stutter.
+        c.totalCostLimit = 220 * 1024 * 1024
         return c
     }()
+
+    /// Store with a real byte cost so `totalCostLimit` means something.
+    static func insert(_ img: UIImage, for url: URL) {
+        let cost = Int(img.size.width * img.scale * img.size.height * img.scale * 4)
+        shared.setObject(img, forKey: url as NSURL, cost: cost)
+    }
+
+    /// Decode `data` downsampled so its longest side is at most `maxDimension`
+    /// pixels. ImageIO's thumbnailing decodes STRAIGHT to the target size — it
+    /// never materializes the full-resolution bitmap, so a 12MP shot costs a
+    /// few MB instead of ~45MB. Full-screen display needs ~2600px at most.
+    static func decodeDownsampled(_ data: Data, maxDimension: CGFloat = 2600) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, srcOpts) else {
+            return UIImage(data: data)
+        }
+        let thumbOpts = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
+    }
 }
 
 /// Image view tailored for the 35mm film-strip frames on the Rolls feed.
@@ -115,8 +147,8 @@ struct FilmFrameImage: View {
                    !(200..<300).contains(http.statusCode) {
                     lastReason = "HTTP \(http.statusCode)"
                     if (400..<500).contains(http.statusCode) { break }   // won't recover
-                } else if let img = UIImage(data: data) {
-                    FilmImageCache.shared.setObject(img, forKey: url as NSURL)
+                } else if let img = FilmImageCache.decodeDownsampled(data) {
+                    FilmImageCache.insert(img, for: url)
                     await apply(image: img, fail: nil)
                     return
                 } else {

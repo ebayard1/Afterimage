@@ -8,11 +8,20 @@ import SwiftUI
 // `safeAreaInset` so every page (critically the camera, whose shell artwork
 // needs every point of height) lays out inside the space above it.
 
+/// App-wide tab selection, injected into the environment so any screen can
+/// send the user to another tab (e.g. an album's OPEN CAMERA button switches
+/// to the one real camera page instead of presenting its own copy).
+@Observable
+final class TabRouter {
+    var selected: MainTabView.Tab = .rolls
+}
+
 struct MainTabView: View {
     enum Tab: Int, Hashable, CaseIterable { case rolls, camera, profile }
-    @State private var selectedTab: Tab = .rolls
+    @State private var router = TabRouter()
 
     var body: some View {
+        @Bindable var router = router
         GeometryReader { geo in
             let topInset = geo.safeAreaInsets.top
             // The camera shell is width-fit and top-anchored, so its bottom
@@ -22,7 +31,7 @@ struct MainTabView: View {
             let fullHeight = geo.size.height + topInset + geo.safeAreaInsets.bottom
             let shellBottom = geo.size.width * (1740.0 / 904.0)
             let barHeight = max(56, fullHeight - shellBottom - geo.safeAreaInsets.bottom)
-            TabView(selection: $selectedTab) {
+            TabView(selection: $router.selected) {
                 HomeView()
                     .safeAreaPadding(.top, topInset)
                     .tag(Tab.rolls)
@@ -46,10 +55,11 @@ struct MainTabView: View {
             // On the camera page the whole screen IS the device — hide the
             // system status bar (clock / battery / signal) so nothing floats
             // over the shell. Rolls and Profile keep it.
-            .statusBarHidden(selectedTab == .camera)
-            .onChange(of: selectedTab) { _, _ in
+            .statusBarHidden(router.selected == .camera)
+            .onChange(of: router.selected) { _, _ in
                 UISelectionFeedbackGenerator().selectionChanged()
             }
+            .environment(router)
         }
     }
 
@@ -59,32 +69,34 @@ struct MainTabView: View {
     // artwork — the glass then floats over the background, not over the leather.
 
     private func compactBar(height: CGFloat) -> some View {
-        // Bare floating icons — no glass, no pill. Over the app's near-black
-        // surfaces the glass capsule just read as a flat grey rectangle, so
-        // the bar is now only the three icons. The height is computed by the
-        // caller so the bar's top edge meets the camera shell's bottom edge.
+        // Liquid Glass capsule (back by request): the three icons ride inside
+        // a floating glass pill, vertically centred in the zone between the
+        // camera shell's bottom edge and the home indicator.
         HStack {
             barButton(.rolls, icon: "film.stack.fill", label: "Rolls")
             barButton(.camera, icon: "camera.fill", label: "Camera")
             barButton(.profile, icon: "person.crop.circle.fill", label: "Profile")
         }
+        .frame(height: 52)
+        .padding(.horizontal, 22)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.horizontal, 56)
         .frame(height: height)
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 64)
     }
 
     private func barButton(_ tab: Tab, icon: String, label: String) -> some View {
         Button {
-            withAnimation(Motion.crisp) { selectedTab = tab }
+            withAnimation(Motion.crisp) { router.selected = tab }
         } label: {
             Image(systemName: icon)
                 .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(selectedTab == tab ? Palette.gold : Palette.textTertiary)
+                .foregroundStyle(router.selected == tab ? Palette.gold : Palette.textTertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
-        .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+        .accessibilityAddTraits(router.selected == tab ? .isSelected : [])
     }
 }
