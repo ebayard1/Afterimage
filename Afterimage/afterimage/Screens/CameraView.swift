@@ -11,10 +11,16 @@ import UIKit
 //   • the white screen cutout   → the live viewfinder (video never draws
 //                                 outside it — flash/black-out ritual and the
 //                                 "sealed" confirmation all render inside)
-//   • the ⚡ button              → flash toggle (gold glow ring when armed)
-//   • the flip-camera button    → front/back flip
-//   • the big bottom circle     → the shutter
-//   • the red LED               → decorative power light on the shell art
+//   • the ⚡ button              → flash toggle (4-frame press cycle)
+//   • the flip-camera button    → front/back flip (2-frame press)
+//   • the big bottom circle     → the shutter (black frames = photo,
+//                                 red frames = video)
+//   • the red LED (REC lamp)    → blinks while recording, winks on capture
+//
+// The shell art has flat GREEN placeholder discs where the buttons live —
+// the sliced button-frame art is ALWAYS drawn on top of them (all frames in
+// a column share the same outer diameter, so no green ever peeks out).
+// There are NO ring/glow press indicators — the art frames ARE the states.
 //
 // A Menlo frame counter (taken/total, e.g. 13/24) sits in the top-left corner
 // in a small rounded black badge. One roll at a time — no roll selector.
@@ -47,6 +53,15 @@ struct CameraView: View {
     @State private var isPressingShutter = false
     @State private var recordStart: Date?
     @State private var recordHoldWork: DispatchWorkItem?
+    /// Flash press cycle: after release, the NEW state's pressed frame shows
+    /// for one beat before settling on its rest frame (On-rest → On-pressed →
+    /// Off-pressed → Off-rest, and the reverse when toggling back).
+    @State private var flashSettleFrame: String?
+    /// Shutter hold: RecordPressed shows for one beat when recording starts,
+    /// then settles on the full red RecordRest face for the recording.
+    @State private var recordFaceSettled = false
+    /// REC lamp wink on photo capture (while recording it blinks on a timer).
+    @State private var lampWink = false
     /// Optimistic floor for the frame counter: bumped the INSTANT a shot is
     /// taken, so the badge ticks immediately instead of waiting for the
     /// upload + Firestore listener round-trip. Rolled back if an upload
@@ -77,30 +92,25 @@ struct CameraView: View {
     private enum Shell {
         static let size = CGSize(width: 904, height: 1740)
         /// The white screen cutout the viewfinder lives in.
-        static let screen = CGRect(x: 241, y: 368, width: 446, height: 769)
-        // Button geometry below was circle-fitted to the baked-in buttons'
-        // rim rings in the artwork (and verified visually against overlay
-        // renders) — centers are the rings' centers, diameters span the full
-        // button including its bezel, so the sliced button art drops exactly
-        // on top of the printed button.
-        // Diameters calibrated on-device with the DEBUG alignment jig
-        // (see showAlignmentJig): the jig's reference rings were compared to
-        // the baked buttons on a live screen capture.
-        // Sized/positioned to fully COVER the baked buttons including their
-        // bottom drop-shadow skirts (art-vs-art shading differs, so the
-        // overlay must swallow the printed button entirely or the baked art
-        // peeks out below). Calibrated against live device captures.
-        static let flashCenter = CGPoint(x: 649, y: 162)
-        static let flashDiameter: CGFloat = 136
-        // Flip shows the baked button at rest (press reveals the sliced art
-        // scaled down), so its center is the BAKED button's ring-fit center.
-        static let flipCenter = CGPoint(x: 781, y: 146)
-        static let flipDiameter: CGFloat = 112
-        static let controlRadius: CGFloat = 62          // hit-target radius
-        static let shutterCenter = CGPoint(x: 465, y: 1505)
-        static let shutterRadius: CGFloat = 126         // hit target: full ring stack
-        /// RecordFace overlay: covers the shutter face + inner rings.
-        static let recordFaceDiameter: CGFloat = 224
+        static let screen = CGRect(x: 241, y: 368, width: 446, height: 768)
+        // Button geometry: measured pixel-exactly off the artwork's green
+        // placeholder discs. The green is INPAINTED OUT of the shipped
+        // CameraShell asset (nearest-neighbor fill), so even a missing frame
+        // shows dark panel, never green. Slices have ZERO margin — the disc
+        // fills the PNG canvas — so the rendered disc diameter equals the
+        // frame size exactly. Diameters run a few px past the old green
+        // (d=129/129/269) to swallow its anti-aliased fringe.
+        static let flashCenter = CGPoint(x: 650, y: 154)
+        static let flashDiameter: CGFloat = 134
+        static let flipCenter = CGPoint(x: 786, y: 154)
+        static let flipDiameter: CGFloat = 134
+        static let shutterCenter = CGPoint(x: 452, y: 1506)
+        static let shutterDiameter: CGFloat = 276
+        static let shutterRadius: CGFloat = 138            // hit-target radius
+        /// REC lamp overlay — the lit red dome + glow sliced from the
+        /// light-ON shell art, edges feathered 16px so the crop blends
+        /// seamlessly over the shell. Lamp core ≈ (798, 1264).
+        static let lampRect = CGRect(x: 683, y: 1149, width: 221, height: 233)
     }
 
     var body: some View {
@@ -143,43 +153,48 @@ struct CameraView: View {
                 }
                 #endif
 
-                // 3. Physical controls — the sliced button art overlaid on the
-                //    shell so they can animate. Flash swaps its glyph on/off; a
-                //    white ring pops up while a control is pressed. (Hidden
-                //    while the alignment jig is on so the baked buttons show.)
+                // 3. Physical controls — the sliced frame art drawn OVER the
+                //    green placeholder discs. Pressing swaps to the pressed
+                //    frame (no rings, no scaling — the art IS the animation).
+                //    (Hidden while the alignment jig is on so the green
+                //    placeholders can be read on a screenshot.)
                 if !Self.showAlignmentJig {
-                    controlButton(image: flashOn ? "FlashOn" : "FlashOff",
-                                  center: Shell.flashCenter, diameter: Shell.flashDiameter,
-                                  scale: s, originX: originX,
-                                  label: flashOn ? "Flash on" : "Flash off",
-                                  hint: "Toggles the camera flash") {
+                    // Flash: 4-frame cycle. Rest → pressed (finger down) →
+                    // new state's pressed (one beat after release, via
+                    // flashSettleFrame) → new state's rest.
+                    frameButton(rest: flashSettleFrame ?? (flashOn ? "FlashOnRest" : "FlashOffRest"),
+                                pressed: flashOn ? "FlashOnPressed" : "FlashOffPressed",
+                                center: Shell.flashCenter, diameter: Shell.flashDiameter,
+                                scale: s, originX: originX,
+                                label: flashOn ? "Flash on" : "Flash off",
+                                hint: "Toggles the camera flash") {
                         flashOn.toggle()
                         camera.setFlash(flashOn ? .on : .off)
+                        flashSettleFrame = flashOn ? "FlashOnPressed" : "FlashOffPressed"
+                        Task {
+                            try? await Task.sleep(nanoseconds: 90_000_000)
+                            flashSettleFrame = nil
+                        }
                     }
 
-                    // Flip: the BAKED button is the resting look; while the
-                    // thumb is down, the sliced FlipButton art appears SCALED
-                    // DOWN — the art itself is the "pressed in" state.
-                    pressRevealButton(image: "FlipButton",
-                                      center: Shell.flipCenter, diameter: Shell.flipDiameter,
-                                      scale: s, originX: originX,
-                                      label: usingFront ? "Switch to rear camera" : "Switch to front camera",
-                                      hint: "Flips between front and rear cameras") {
+                    // Flip: 2 frames — rest, pressed-in while the thumb is down.
+                    frameButton(rest: "FlipRest", pressed: "FlipPressed",
+                                center: Shell.flipCenter, diameter: Shell.flipDiameter,
+                                scale: s, originX: originX,
+                                label: usingFront ? "Switch to rear camera" : "Switch to front camera",
+                                hint: "Flips between front and rear cameras") {
                         usingFront.toggle()
                         Task { await camera.flip(toFront: usingFront) }
                     }
+
+                    // REC lamp: winks on for a beat on photo capture; blinks on
+                    // a 2-second cycle (1s lit, 1s dark) while recording video.
+                    recLamp(scale: s, originX: originX)
                 }
 
                 // Shutter: tap = photo · press-and-hold = record video. The red
                 // record face replaces the shutter while holding.
                 shutterControl(scale: s, originX: originX)
-
-                // Recording timer pill, above the shutter while recording.
-                if isRecording {
-                    recordingTimer
-                        .position(x: originX + Shell.shutterCenter.x * s,
-                                  y: Shell.shutterCenter.y * s - Shell.shutterRadius * s - 24)
-                }
 
                 // Frame counter — vertically CENTRED on the flash button (its
                 // centre is Shell.flashCenter.y in shell space), pinned to the
@@ -303,54 +318,64 @@ struct CameraView: View {
         .frame(width: box.width + 10 * s, height: box.height + 10 * s)
         .clipShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
+        // REC readout lives INSIDE the glass, camcorder-style — top-left
+        // corner of the viewfinder while recording.
+        .overlay(alignment: .topLeading) {
+            if isRecording {
+                recordingTimer
+                    .padding(.leading, 16)
+                    .padding(.top, 14)
+                    .allowsHitTesting(false)
+            }
+        }
         .onTapGesture { location in
             handleTap(location, boxSize: CGSize(width: box.width, height: box.height))
         }
         .position(x: box.midX, y: box.midY)
     }
 
-    // MARK: A physical control on the shell — the sliced button art overlaid on
-    // the baked-in button, with a white "pop" ring while pressed.
+    // MARK: A physical control on the shell — frame-swap art over the green
+    // placeholder disc. The rest frame is ALWAYS drawn (it covers the green);
+    // while the finger is down the pressed frame replaces it. The swap is
+    // instant on purpose — a mechanical click, not a crossfade.
+    // (Everything anchors to a fixed frame; never put a flexible shape in a
+    // ButtonStyle body — one once inflated the hit area to the whole screen.)
 
-    /// A control whose RESTING look is the baked-in button on the shell art.
-    /// While pressed, the sliced button art appears scaled DOWN — the art is
-    /// the "pressed in" state. (Everything anchors to the label's fixed frame;
-    /// never put a flexible shape in the style — one once inflated the hit
-    /// area to the whole screen.)
-    private func pressRevealButton(
-        image: String, center: CGPoint, diameter: CGFloat,
+    private func frameButton(
+        rest: String, pressed: String,
+        center: CGPoint, diameter: CGFloat,
         scale s: CGFloat, originX: CGFloat,
         label: String, hint: String, action: @escaping () -> Void
     ) -> some View {
-        let d = diameter * s
-        return Button(action: action) {
-            Image(image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: d, height: d)
-        }
-        .buttonStyle(PressRevealButtonStyle())
-        .position(x: originX + center.x * s, y: center.y * s)
-        .accessibilityLabel(label)
-        .accessibilityHint(hint)
+        Button(action: action) { Color.clear }
+            .buttonStyle(FrameSwapButtonStyle(rest: rest, pressed: pressed,
+                                              diameter: diameter * s))
+            .position(x: originX + center.x * s, y: center.y * s)
+            .accessibilityLabel(label)
+            .accessibilityHint(hint)
     }
 
-    private func controlButton(
-        image: String, center: CGPoint, diameter: CGFloat,
-        scale s: CGFloat, originX: CGFloat,
-        label: String, hint: String, action: @escaping () -> Void
-    ) -> some View {
-        let d = diameter * s
-        return Button(action: action) {
-            Image(image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: d, height: d)
+    /// The REC lamp — the lit dome sliced from the light-ON shell, dropped
+    /// back at its exact rect. Photo: one wink. Video: 1s lit / 1s dark.
+    @ViewBuilder
+    private func recLamp(scale s: CGFloat, originX: CGFloat) -> some View {
+        let lampImage = Image("RecLampOn")
+            .resizable()
+            .frame(width: Shell.lampRect.width * s, height: Shell.lampRect.height * s)
+        Group {
+            if isRecording {
+                TimelineView(.periodic(from: recordStart ?? Date(), by: 1.0)) { ctx in
+                    let elapsed = recordStart.map { ctx.date.timeIntervalSince($0) } ?? 0
+                    // Lit on even seconds: 1s on, 1s off — a 2-second cycle.
+                    lampImage.opacity(Int(max(0, elapsed)) % 2 == 0 ? 1 : 0)
+                }
+            } else if lampWink {
+                lampImage
+            }
         }
-        .buttonStyle(ControlButtonStyle(ringDiameter: d * 1.02))
-        .position(x: originX + center.x * s, y: center.y * s)
-        .accessibilityLabel(label)
-        .accessibilityHint(hint)
+        .position(x: originX + Shell.lampRect.midX * s, y: Shell.lampRect.midY * s)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     #if DEBUG
@@ -362,7 +387,7 @@ struct CameraView: View {
                   color: .red, scale: s, originX: originX)
         jigTarget(center: Shell.flipCenter, baseDiameter: Shell.flipDiameter,
                   color: .green, scale: s, originX: originX)
-        jigTarget(center: Shell.shutterCenter, baseDiameter: Shell.recordFaceDiameter,
+        jigTarget(center: Shell.shutterCenter, baseDiameter: Shell.shutterDiameter,
                   color: .cyan, scale: s, originX: originX)
     }
 
@@ -389,30 +414,29 @@ struct CameraView: View {
 
     // MARK: Shutter — tap = photo, press-and-hold = record video.
 
+    /// Which shutter frame is showing. Photo tap never reaches red:
+    /// ShutterRest → ShutterPressed → ShutterRest. Hold to record runs the
+    /// full column: ShutterPressed → RecordPressed (one beat) → RecordRest
+    /// (steady, lamp blinking) → back to rest on release.
+    private var shutterFrameName: String {
+        if isRecording { return recordFaceSettled ? "RecordRest" : "RecordPressed" }
+        if isPressingShutter { return "ShutterPressed" }
+        return "ShutterRest"
+    }
+
     private func shutterControl(scale s: CGFloat, originX: CGFloat) -> some View {
-        let d = Shell.shutterRadius * 2 * s              // hit target: full ring stack
-        let faceD = Shell.recordFaceDiameter * s          // red face: face + inner rings
+        let d = Shell.shutterRadius * 2 * s              // hit target
+        let faceD = Shell.shutterDiameter * s            // frame art over the green disc
         return ZStack {
-            // Constant invisible tap target over the baked shutter.
+            // Constant invisible tap target over the shutter.
             Color.white.opacity(0.001).frame(width: d, height: d)
-            if isRecording {
-                // Recording: red face full-size with the pulsing ring.
-                Image("RecordFace")
-                    .resizable().scaledToFit()
-                    .frame(width: faceD, height: faceD)
-                RecordingRing(diameter: d * 1.02)
-            } else if isPressingShutter {
-                // Pressed (photo): the shutter itself pushes inward. The
-                // overlay is the shutter disc sliced from the SHELL ART, so
-                // it's pixel-identical to the baked button — red is video-only.
-                Image("ShutterFace")
-                    .resizable().scaledToFit()
-                    .frame(width: d, height: d)
-                    .scaleEffect(0.92)
-            }
+            // Backing disc — same insurance as the small buttons.
+            Circle().fill(.black).frame(width: faceD, height: faceD)
+            // The frame art is ALWAYS drawn over the shell.
+            Image(shutterFrameName)
+                .resizable().scaledToFit()
+                .frame(width: faceD, height: faceD)
         }
-        .animation(.easeOut(duration: 0.1), value: isPressingShutter)
-        .animation(.easeOut(duration: 0.12), value: isRecording)
         .frame(width: d, height: d)
         .contentShape(Circle())
         .position(x: originX + Shell.shutterCenter.x * s, y: Shell.shutterCenter.y * s)
@@ -425,8 +449,10 @@ struct CameraView: View {
         TimelineView(.periodic(from: Date(), by: 0.2)) { ctx in
             let secs = recordStart.map { max(0, ctx.date.timeIntervalSince($0)) } ?? 0
             HStack(spacing: 6) {
+                // Camcorder dot — blinks once a second.
                 Circle().fill(.red).frame(width: 8, height: 8)
-                Text(Self.timeString(secs))
+                    .opacity(Int(secs * 2) % 2 == 0 ? 1 : 0.25)
+                Text("REC \(Self.timeString(secs))")
                     .font(.custom("Menlo", size: 13).weight(.bold))
                     .foregroundStyle(.white)
             }
@@ -446,6 +472,8 @@ struct CameraView: View {
             .onChanged { _ in
                 guard !isPressingShutter else { return }
                 isPressingShutter = true
+                // Physical click the instant the shutter is pressed in.
+                UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.8)
                 guard !isUploading, remainingShots > 0 else { return }
                 // Hold past this threshold → start recording. A quicker release
                 // is a plain photo tap.
@@ -467,7 +495,14 @@ struct CameraView: View {
 
     private func beginRecording() {
         guard !isRecording, !isUploading, remainingShots > 0 else { return }
-        withAnimation(Motion.crisp) { isRecording = true }
+        isRecording = true
+        // Run the red frames in sequence: RecordPressed for one beat, then
+        // the full RecordRest face for the rest of the recording.
+        recordFaceSettled = false
+        Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            recordFaceSettled = true
+        }
         recordStart = Date()
         UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         camera.startRecording()
@@ -551,6 +586,12 @@ struct CameraView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8)
         }
         withAnimation(.linear(duration: 0.06)) { flashFlash = true }
+        // REC lamp winks with the shutter — lit for the flash + black-out beat.
+        lampWink = true
+        Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            lampWink = false
+        }
         Task {
             try? await Task.sleep(nanoseconds: 90_000_000)
             withAnimation(.linear(duration: 0.05)) {
@@ -614,54 +655,30 @@ struct CameraView: View {
     }
 }
 
-// MARK: - Press-reveal style — nothing at rest (the baked art shows through);
-// the label art appears scaled down while pressed. No ring — the smaller art
-// alone reads as the press.
+// MARK: - Frame-swap style — the button IS its art. Rest frame at rest,
+// pressed frame while the finger is down. No rings, no scaling, no fade —
+// the swap is instant, like a mechanical button. All frames in a column
+// share the same outer diameter, so the green placeholder stays covered.
 
-private struct PressRevealButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 1 : 0)
-            // Constant, label-sized invisible hit target (transparent views
-            // don't hit-test on their own).
-            .background(Circle().fill(Color.white.opacity(0.001)))
-            .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.90 : 1)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
-    }
-}
-
-// MARK: - Control button style — a white "pop" ring while pressed
-
-private struct ControlButtonStyle: ButtonStyle {
-    let ringDiameter: CGFloat
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.90 : 1)
-            .overlay {
-                Circle()
-                    .stroke(Color.white.opacity(configuration.isPressed ? 0.95 : 0), lineWidth: 2.5)
-                    .frame(width: ringDiameter, height: ringDiameter)
-                    .shadow(color: .white.opacity(configuration.isPressed ? 0.7 : 0), radius: 6)
-            }
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-// MARK: - Recording ring — pulsing halo around the shutter while recording
-
-private struct RecordingRing: View {
+private struct FrameSwapButtonStyle: ButtonStyle {
+    let rest: String
+    let pressed: String
     let diameter: CGFloat
-    var body: some View {
-        TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let pulse = (sin(t * 4) + 1) / 2
-            Circle()
-                .stroke(Color.white.opacity(0.9), lineWidth: 3)
-                .frame(width: diameter, height: diameter)
-                .shadow(color: Color.red.opacity(0.6 + 0.4 * pulse), radius: 6 + 6 * pulse)
-                .opacity(0.75 + 0.25 * pulse)
-        }
+    func makeBody(configuration: Configuration) -> some View {
+        Image(configuration.isPressed ? pressed : rest)
+            .resizable()
+            .scaledToFit()
+            .frame(width: diameter, height: diameter)
+            // Opaque black backing disc: doubles as the constant hit target
+            // and guarantees the shell under the button can never peek
+            // through the art's feathered edge.
+            .background(Circle().fill(.black))
+            .contentShape(Circle())
+            // Physical click on the way down, lighter tick on release.
+            .onChange(of: configuration.isPressed) { _, pressed in
+                UIImpactFeedbackGenerator(style: pressed ? .rigid : .light)
+                    .impactOccurred(intensity: pressed ? 0.8 : 0.5)
+            }
     }
 }
 

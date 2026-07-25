@@ -1,0 +1,120 @@
+{
+  "FlipRest": {
+    "center": [
+      254.0,
+      255.5
+    ],
+    "radius": 199.5,
+    "out_size": [
+      408,
+      407
+    ]
+  },
+  "FlipPressed": {
+    "center": [
+      254.0,
+      255.5
+    ],
+    "radius": 199.5,
+    "out_size": [
+      408,
+      407
+    ]
+  },
+  "FlashOnRest": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "FlashOnPressed": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "FlashOffPressed": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "FlashOffRest": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "ShutterRest": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "ShutterPressed": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "RecordPressed": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "RecordRest": {
+    "center": [
+      256.0,
+      256.5
+    ],
+    "radius": 190.5,
+    "out_size": [
+      390,
+      389
+    ]
+  },
+  "RecLampOn": {
+    "rect": [
+      699,
+      1165,
+      211,
+      201
+    ]
+  }
+}

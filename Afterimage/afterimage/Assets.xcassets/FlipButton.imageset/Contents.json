@@ -1,9 +1,0 @@
-{
-  "images" : [
-    {
-      "filename" : "FlipButton.png",
-      "idiom" : "universal"
-    }
-  ],
-  "info" : { "author" : "xcode", "version" : 1 }
-}

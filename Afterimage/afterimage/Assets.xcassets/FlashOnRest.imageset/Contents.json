@@ -1,0 +1,9 @@
+{
+  "images" : [
+    {
+      "filename" : "FlashOnRest.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
