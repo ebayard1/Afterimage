@@ -88,6 +88,14 @@ struct CameraView: View {
     /// camera comes back first, so a quick round trip is free while actually
     /// leaving the tab still shuts the session down.
     @State private var pendingStop: Task<Void, Never>?
+    /// The in-flight `camera.start()`. On first launch that call is parked in
+    /// front of the system permission alert, and the alert itself drives the
+    /// scene `.inactive` — so the debounced stop has to wait for this task
+    /// before its clock starts, or it vetoes the start the user is allowing.
+    @State private var startTask: Task<Void, Never>?
+    /// One-shot guard for the coach-mark countdown, which is now armed by the
+    /// session going live rather than by the view mounting.
+    @State private var coachArmed = false
 
     /// What the counter badge shows — never behind the local action.
     private var displayedShotCount: Int { max(shotService.myShotCount, optimisticShotCount) }
@@ -287,10 +295,6 @@ struct CameraView: View {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
             lastUsedAlbumId = album.id ?? ""
-            if !hasSeenCameraCoach {
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                withAnimation { showCameraCoach = true }
-            }
         }
         // The session gate. `initial: true` covers the first appearance (in a
         // full-screen cover `shouldRun` is already true when the view mounts).
@@ -299,12 +303,30 @@ struct CameraView: View {
             pendingStop?.cancel()
             pendingStop = nil
             if run {
-                Task { await camera.start() }
+                startTask = Task {
+                    let live = await camera.start()
+                    // The coach mark only makes sense over a live viewfinder,
+                    // so its beat is armed here rather than at mount. In its
+                    // own task: `startTask` must finish the moment the
+                    // permission/start decision is made, since the debounced
+                    // stop below waits on it.
+                    if live { Task { await armCoachMark() } }
+                }
             } else {
                 pendingStop = Task {
+                    // INVARIANT: the debounce clock never runs while a system
+                    // permission alert is up. That alert drives the scene
+                    // `.inactive`, so on a fresh install this path fires with
+                    // `start()` still suspended in front of the dialog — and a
+                    // user who reads it for more than 1.5s would otherwise get
+                    // a stop that clears `wantsRunning` and vetoes the very
+                    // start they're about to allow. Waiting on the start task
+                    // covers both the camera and the microphone prompts.
+                    await startTask?.value
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     guard !Task.isCancelled else { return }
                     camera.stop()
+                    pendingStop = nil
                 }
             }
         }
@@ -318,6 +340,19 @@ struct CameraView: View {
     }
 
     private var remainingShots: Int { max(0, rollCapacity - displayedShotCount) }
+
+    /// The first-run coach mark, 800ms after the camera comes up.
+    /// Deliberately NOT counted from `onAppear`: on a fresh install the system
+    /// camera-permission alert is on screen then, and the mark would animate in
+    /// over the dialog and a black viewfinder — consuming `hasSeenCameraCoach`
+    /// at the one moment it can't be read. Same look, same beat, later start.
+    private func armCoachMark() async {
+        guard !hasSeenCameraCoach, !coachArmed else { return }
+        coachArmed = true
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        guard !hasSeenCameraCoach else { return }
+        withAnimation { showCameraCoach = true }
+    }
 
     // MARK: Top-left chrome — the frame counter in a small rounded black
     // badge, plus the close button when presented as a full-screen cover.
@@ -838,6 +873,27 @@ private struct FrameSwapButtonStyle: ButtonStyle {
 
 // MARK: - Camera controller (AVFoundation wrapper)
 
+/// Capture failures that have to cross a queue hop. `Error` is not `Sendable`,
+/// so AVFoundation's own error object never leaves the delegate's callback
+/// thread — its message is lifted into this value instead.
+/// `nonisolated` like the controller: this file defaults to MainActor, and
+/// these values are made and thrown on the session queue.
+nonisolated enum CameraError: LocalizedError {
+    /// A newer capture replaced this one before its frame landed.
+    case captureSuperseded
+    /// No callback ever arrived for this capture (see `capturePhoto`).
+    case captureTimedOut
+    case captureFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .captureSuperseded: return "capture superseded"
+        case .captureTimedOut: return "capture timed out"
+        case .captureFailed(let message): return message
+        }
+    }
+}
+
 nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     private let output = AVCapturePhotoOutput()
@@ -849,6 +905,14 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     private let queue = DispatchQueue(label: "afterimage.camera.session")
     private var configured = false
     private var captureContinuation: CheckedContinuation<UIImage?, Error>?
+    /// `uniqueID` of the photo settings `captureContinuation` is waiting for.
+    /// Frames are matched to waiters by identity, never by arrival order — a
+    /// superseded capture still gets its callback (see `capturePhoto`).
+    private var pendingCaptureID: Int64?
+    /// How long a capture may stay outstanding before we resume its waiter
+    /// ourselves. Generous — flash and low light both stretch a capture — but
+    /// finite, because a stranded continuation is unrecoverable.
+    private static let captureTimeout: TimeInterval = 8
     private var currentInput: AVCaptureDeviceInput?
     private var flashMode: AVCaptureDevice.FlashMode = .off
     private var isFront = false
@@ -861,29 +925,58 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     /// window (leave the tab while the camera is still spinning up). Without
     /// this flag the late start would win and leave the sensor running behind
     /// a page the user already left.
+    ///
+    /// It is also the record of a *deferred* stop: `false` means "stop as soon
+    /// as nothing is in flight", so a later `start()` cancels a pending stop
+    /// simply by setting it back to `true`. See `applyPendingStop`.
     private var wantsRunning = false
 
-    func start() async {
+    /// Bring the session up, requesting permission if it hasn't been granted
+    /// yet. Returns whether the session ended up running — the view holds the
+    /// first-run coach mark until there's a live preview to point at.
+    @discardableResult
+    func start() async -> Bool {
         // Record the intent BEFORE the permission hop, so an interleaved
         // stop() can veto this start (see `wantsRunning`).
         queue.async { [self] in wantsRunning = true }
-        guard await requestAccess() else { return }
+        guard await requestAccess() else {
+            // Denied. The intent flag has to reflect reality: left `true` it
+            // would silently cancel every later deferred stop.
+            queue.async { [self] in
+                wantsRunning = false
+                applyPendingStop()
+            }
+            return false
+        }
         // Best-effort mic — if denied, video still records (silently).
         _ = await requestMicAccess()
-        await withCheckedContinuation { cont in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             queue.async { [self] in
-                guard wantsRunning else { cont.resume(); return }
+                // A stop() that landed while we were parked in front of the
+                // permission alert wins — the user left the camera. (The view
+                // holds its debounced stop for exactly that window, so this is
+                // now only reached when the page genuinely went away.)
+                guard wantsRunning else {
+                    applyPendingStop()
+                    cont.resume(returning: false)
+                    return
+                }
                 // Configure ONCE and stay configured: `stop()` only stops the
                 // session, it never tears inputs down, so coming back to the
                 // tab is a warm restart (~fast) rather than a full rebuild.
+                #if DEBUG
+                // Read BEFORE configureSession(), or the log always says
+                // "warm" and can't tell a cold start from a restart.
+                let wasConfigured = configured
+                #endif
                 if !configured { configureSession(front: false) }
                 if !session.isRunning {
                     session.startRunning()
                     #if DEBUG
-                    print("📷 SESSION START (configured: \(configured))")
+                    print("📷 SESSION START (warm: \(wasConfigured))")
                     #endif
                 }
-                cont.resume()
+                cont.resume(returning: session.isRunning)
             }
         }
     }
@@ -969,15 +1062,40 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     /// the next `start()` is a warm restart. A running session off-screen is
     /// the app's biggest heat source, so this is called whenever the camera
     /// stops being the visible page (debounced by the view).
+    ///
+    /// It never tears down work in progress. Stopping used to be rare; the
+    /// debounced gate makes it routine, and `stopRunning()` on top of an
+    /// outstanding capture can swallow the photo callback (stranding its
+    /// continuation — a permanently dead shutter), while stopping mid-recording
+    /// throws away up to 30s of footage. So the stop is *recorded*
+    /// (`wantsRunning = false`) and re-armed by whichever delegate callback
+    /// finishes the work.
     func stop() {
         queue.async { [self] in
-            self.wantsRunning = false
-            if self.session.isRunning {
-                self.session.stopRunning()
-                #if DEBUG
-                print("📷 SESSION STOP")
-                #endif
-            }
+            wantsRunning = false
+            applyPendingStop()
+        }
+    }
+
+    /// Stop the session iff a stop is wanted and nothing is in flight.
+    ///
+    /// INVARIANT: must be called on `queue`, and must be called from EVERY
+    /// point where in-flight work completes — otherwise a deferred stop never
+    /// lands and the sensor stays hot behind another tab, which is the exact
+    /// regression the gate exists to prevent. Current callers: `stop()`,
+    /// `start()`'s vetoed paths, the photo delegate (and its timeout), and the
+    /// recording delegate.
+    private func applyPendingStop() {
+        // A start() since the stop was requested cancels it.
+        guard !wantsRunning else { return }
+        // Don't cut a capture or a recording off at the knees — the callback
+        // that completes it will call back in here.
+        guard captureContinuation == nil, !movieOutput.isRecording else { return }
+        if session.isRunning {
+            session.stopRunning()
+            #if DEBUG
+            print("📷 SESSION STOP")
+            #endif
         }
     }
 
@@ -1066,10 +1184,8 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
                 // this is the backstop if it ever doesn't.
                 if let stale = self.captureContinuation {
                     self.captureContinuation = nil
-                    stale.resume(throwing: NSError(
-                        domain: "Afterimage.Camera", code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "capture superseded"]
-                    ))
+                    self.pendingCaptureID = nil
+                    stale.resume(throwing: CameraError.captureSuperseded)
                 }
                 self.captureContinuation = cont
                 self.pendingCropAspect = cropAspect
@@ -1078,7 +1194,31 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
                 if self.output.supportedFlashModes.contains(self.flashMode) {
                     settings.flashMode = self.flashMode
                 }
+                // INVARIANT: a frame is paired with its waiter by identity, not
+                // by arrival order. AVFoundation still delivers the callback of
+                // a superseded capture, and the delegate would otherwise resume
+                // whichever continuation happened to be installed — handing
+                // shot B's caller shot A's image (with A's crop and mirror),
+                // then silently dropping B's frame when its own callback found
+                // the slot already empty.
+                let id = settings.uniqueID
+                self.pendingCaptureID = id
                 self.output.capturePhoto(with: settings, delegate: self)
+                // Safety valve. AVFoundation does not promise a callback for
+                // every request — a session torn down underneath one can eat
+                // it — and a stranded continuation is unrecoverable: `capture()`
+                // never returns, `isUploading` stays true, and the shutter is
+                // dead for the rest of the session. It would also pin a
+                // deferred stop open, keeping the sensor hot. Resume it here if
+                // nothing has landed; the view's existing failure path takes
+                // over from there.
+                self.queue.asyncAfter(deadline: .now() + Self.captureTimeout) { [self] in
+                    guard pendingCaptureID == id, let stranded = captureContinuation else { return }
+                    captureContinuation = nil
+                    pendingCaptureID = nil
+                    stranded.resume(throwing: CameraError.captureTimedOut)
+                    applyPendingStop()
+                }
             }
         }
     }
@@ -1165,16 +1305,24 @@ extension CameraController {
                                 didFinishRecordingTo outputFileURL: URL,
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
+        // `Error` isn't Sendable, so only its message crosses onto the queue.
+        let failure = error?.localizedDescription
         queue.async { [self] in
             detachAudio()   // drop the mic-in-use indicator as soon as we stop
             let cont = recordContinuation
             recordContinuation = nil
-            if let error {
-                print("🎥 VIDEO RECORD ERROR:", error.localizedDescription)
+            if let failure {
+                print("🎥 VIDEO RECORD ERROR:", failure)
+                // The movie is unusable and nobody else knows this path exists,
+                // so don't leave it behind in the temp directory.
+                try? FileManager.default.removeItem(at: outputFileURL)
                 cont?.resume(returning: nil)
             } else {
                 cont?.resume(returning: outputFileURL)
             }
+            // The recording is no longer in flight, so a stop deferred behind
+            // it (Control Center pulled down mid-record) can finally land.
+            applyPendingStop()
         }
     }
 
@@ -1185,21 +1333,44 @@ extension CameraController {
         // `capturePhoto` sets the continuation and the pending crop/mirror on
         // `queue`. Hop onto `queue` before touching any of that state — this
         // used to be a plain cross-thread read/write of `captureContinuation`.
-        // The JPEG data is captured here (the AVCapturePhoto must be read
-        // inside the callback); the crop/mirror work then runs on the session
-        // queue, which is off the main thread either way.
+        // Everything needed off the AVCapturePhoto is read here, inside the
+        // callback, and must be Sendable to make the hop — which `Error` is
+        // not, so a failure travels as its message.
         let data = photo.fileDataRepresentation()
+        let photoID = photo.resolvedSettings.uniqueID
+        let failure = error.map { CameraError.captureFailed($0.localizedDescription) }
         queue.async { [self] in
-            guard let cont = captureContinuation else { return }
+            // Identity, not just "is a continuation installed": this may be the
+            // callback of a capture that was already superseded (and already
+            // resumed with `.captureSuperseded`). Resuming the installed waiter
+            // with it would pair the wrong frame — and the wrong crop/mirror —
+            // with the wrong request, then drop the right frame later.
+            guard pendingCaptureID == photoID, let cont = captureContinuation else { return }
             captureContinuation = nil
-            if let error {
-                cont.resume(throwing: error)
-            } else if let data, let image = UIImage(data: data) {
-                cont.resume(returning: processed(image,
-                                                 aspect: pendingCropAspect,
-                                                 mirror: pendingMirror))
-            } else {
-                cont.resume(returning: nil)
+            pendingCaptureID = nil
+            let aspect = pendingCropAspect
+            let mirror = pendingMirror
+            // The capture is no longer in flight, so a stop that was deferred
+            // behind it lands now — it doesn't have to wait for the crop.
+            applyPendingStop()
+
+            if let failure {
+                cont.resume(throwing: failure)
+                return
+            }
+            // Only continuation bookkeeping belongs on `queue`. The JPEG decode
+            // and `processed()` are two full-resolution passes (~50–150ms), and
+            // this is the serial queue every session mutation funnels through:
+            // setZoom, focus, setFlash, flip, startRecording and stop() would
+            // all sit behind the render, and rapid-fire captures would
+            // serialize behind each other. Off the queue — and still off the
+            // main thread.
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                guard let data, let image = UIImage(data: data) else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                cont.resume(returning: processed(image, aspect: aspect, mirror: mirror))
             }
         }
     }
