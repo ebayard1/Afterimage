@@ -9,6 +9,12 @@ import SwiftUI
 // rolls, the editorial empty state shows instead.
 
 struct CameraTabView: View {
+    /// True only while the camera is the page on screen and the app is
+    /// foregrounded. Forwarded straight to `CameraView`, which gates
+    /// `startRunning`/`stopRunning` on it — the paged TabView keeps this view
+    /// mounted on every tab, so visibility can't be inferred from the view
+    /// lifecycle (see MainTabView).
+    let isActive: Bool
     @Environment(AuthService.self) private var auth
     @State private var albumService = AlbumService()
     @State private var showCreate = false
@@ -35,7 +41,7 @@ struct CameraTabView: View {
                 // The live camera, always open. The shell artwork runs under
                 // the status bar (top edge flush with the top of the screen)
                 // and stops above the compact tab bar.
-                CameraView(album: album)
+                CameraView(album: album, isActive: isActive)
                     .environment(auth)
             } else {
                 RadialGradient(
