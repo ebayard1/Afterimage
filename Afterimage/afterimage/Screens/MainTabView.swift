@@ -17,6 +17,11 @@ struct MainTabView: View {
     // you browse the feed — the single largest source of device heat in the
     // app. `isActive` is that signal: the camera only runs when it is the
     // selected page AND the app is foregrounded.
+    //
+    // The same mounting behaviour keeps every page's ambient `TimelineView`
+    // clocks ticking on pages you aren't looking at, so each page is also
+    // handed `ambientMotionPaused` on exactly the same condition. See
+    // `AmbientMotion.swift`.
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -32,13 +37,21 @@ struct MainTabView: View {
             TabView(selection: $selectedTab) {
                 HomeView()
                     .safeAreaPadding(.top, topInset)
+                    .environment(\.ambientMotionPaused,
+                                 selectedTab != .rolls || scenePhase != .active)
                     .tag(Tab.rolls)
 
                 CameraTabView(isActive: selectedTab == .camera && scenePhase == .active)
+                    // Gates the counter badge's warmthFlicker and the
+                    // FlashReadyLED, which otherwise pulse behind the feed.
+                    .environment(\.ambientMotionPaused,
+                                 selectedTab != .camera || scenePhase != .active)
                     .tag(Tab.camera)
 
                 ProfileView()
                     .safeAreaPadding(.top, topInset)
+                    .environment(\.ambientMotionPaused,
+                                 selectedTab != .profile || scenePhase != .active)
                     .tag(Tab.profile)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))

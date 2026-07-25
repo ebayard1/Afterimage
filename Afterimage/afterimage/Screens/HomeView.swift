@@ -21,6 +21,10 @@ struct HomeView: View {
     /// True while the feed is actively scrolling — drives the film-strip glare
     /// fade (full while scrolling, subtle at rest). See `ScrollSheen`.
     @State private var feedScrolling = false
+    /// Published by `MainTabView`: true unless Rolls is the selected page and
+    /// the app is foregrounded. See `AmbientMotion.swift`.
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Activity rail source — the live fanned-out feed.
     private var railEvents: [ActivityEvent] {
@@ -69,7 +73,13 @@ struct HomeView: View {
                 // Ambient sunrise wash that breathes — same metaphor as the
                 // detail surfaces, so the whole app shares a single living
                 // backdrop instead of going neutral in the feed.
-                TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
+                //
+                // Stays at 10 Hz: there is exactly one of these for the whole
+                // page, and it is a full-screen gradient where banding on a
+                // slower step would be visible. It just needs to stop when the
+                // page doesn't.
+                TimelineView(.animation(minimumInterval: 1.0 / 10.0,
+                                        paused: ambientPaused || reduceMotion)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let pulse = (sin(t * (2 * .pi / 8.4)) + 1) / 2
                     RadialGradient(
@@ -138,6 +148,12 @@ struct HomeView: View {
                                                 }
                                             }
                                         }
+                                        // Eager VStack ⇒ offscreen cards stay
+                                        // mounted and would keep every clock
+                                        // in them ticking forever. This only
+                                        // republishes an environment flag; it
+                                        // does not touch layout.
+                                        .ambientVisibilityGate()
                                     }
                                 }
                                 if !revealed.isEmpty {
@@ -176,6 +192,9 @@ struct HomeView: View {
                                             )
                                         }
                                         }
+                                        // See the developing loop above —
+                                        // environment-only, layout-neutral.
+                                        .ambientVisibilityGate()
                                     }
                                 }
                             }

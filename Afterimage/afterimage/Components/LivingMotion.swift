@@ -14,6 +14,12 @@ import SwiftUI
 //     properties.
 //   - Cheap enough to run on every visible card simultaneously without
 //     dropping frames.
+//   - **Gated, never removed.** Every clock below ORs `\.ambientMotionPaused`
+//     (offscreen card / unselected tab / backgrounded app) into its `paused:`
+//     argument, so motion costs nothing when nobody can see it. Rates are also
+//     the slowest the effect can tolerate: these are multi-second loops, and a
+//     30 Hz clock buys nothing over 8–12 Hz except wakeups. See
+//     `AmbientMotion.swift`.
 
 // MARK: LivingSprocketStrip
 //
@@ -42,6 +48,9 @@ struct LivingSprocketStrip: View {
     /// numbers so the entire strip pans in unison at one speed.
     var externalOffset: CGFloat? = nil
 
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Group {
             if let ext = externalOffset {
@@ -52,7 +61,12 @@ struct LivingSprocketStrip: View {
             } else {
                 // Standalone mode: drift on a slow private clock (used by the
                 // developing card, which has no panning frames to sync to).
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+                // 12 Hz: one full hole-pitch takes `period` (~5s), so the strip
+                // travels ~6pt/sec — well under a point per tick at 12 Hz, and
+                // the 30 Hz it used to run at was pure wakeups. Paused whenever
+                // the card is offscreen or the page isn't showing.
+                TimelineView(.animation(minimumInterval: 1.0 / 12.0,
+                                        paused: ambientPaused || reduceMotion)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let phase = (t.truncatingRemainder(dividingBy: period)) / period   // 0…1
                     GeometryReader { geo in
@@ -85,9 +99,15 @@ struct LivingSprocketStrip: View {
 
 // MARK: LivingFilmGrain
 //
-// TimelineView-driven Canvas that re-renders the grain field at ~12fps with a
+// TimelineView-driven Canvas that re-renders the grain field at ~8fps with a
 // deterministic per-frame seed. The dots reposition slightly each tick so the
 // surface visibly twinkles instead of being static.
+//
+// 8 Hz reads as film grain, not as animation — the specks are uncorrelated
+// frame to frame, so a faster clock just repaints 70 sub-pixel ellipses more
+// often. It is also paused while the feed is *scrolling*: a 4.5%-opacity
+// twinkle is invisible during a flick, and those are exactly the frames where
+// the budget is tightest.
 
 struct LivingFilmGrain: View {
     /// Density — number of grain specks per frame.
@@ -95,13 +115,17 @@ struct LivingFilmGrain: View {
     /// Per-speck opacity.
     var opacity: Double = 0.045
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.isFeedScrolling) private var isFeedScrolling
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: reduceMotion)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 8.0,
+                                paused: ambientPaused || reduceMotion || isFeedScrolling)) { context in
             Canvas { ctx, size in
                 // Seed from the current time bucket so the grain twinkles
-                // deterministically across the population of specks.
-                let bucket = Int(context.date.timeIntervalSinceReferenceDate * 12)
+                // deterministically across the population of specks. The
+                // bucket rate tracks the clock rate — one new field per tick.
+                let bucket = Int(context.date.timeIntervalSinceReferenceDate * 8)
                 var rng = SimpleSplitMix(seed: bucket)
                 for _ in 0..<density {
                     let x = CGFloat(rng.next01()) * size.width
@@ -131,10 +155,19 @@ struct WarmthFlicker: ViewModifier {
     /// Lower bound of the opacity oscillation. Upper bound is always 1.0.
     var floor: Double = 0.93
 
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isFeedScrolling) private var isFeedScrolling
+
     func body(content: Content) -> some View {
-        // 10 Hz is invisible for a multi-second opacity sine and halves the
-        // wakeups — several of these run on every card and headline.
-        TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
+        // 6 Hz: the oscillation is a 3.4s sine across a 7% opacity range, so a
+        // tick moves alpha by well under a thousandth — far below anything the
+        // eye or the display can resolve. This is the most-instantiated clock
+        // in the app (header, every section header, every card title), so its
+        // wakeup count matters more than any other. Paused offscreen/off-tab,
+        // and during a scroll where the flicker is imperceptible anyway.
+        TimelineView(.animation(minimumInterval: 1.0 / 6.0,
+                                paused: ambientPaused || reduceMotion || isFeedScrolling)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let cycle = (sin(t * (2 * .pi / period)) + 1) / 2  // 0…1
             let alpha = floor + (1.0 - floor) * cycle
@@ -159,8 +192,15 @@ extension View {
 // metaphor without any chrome.
 
 struct FlashReadyLED: View {
+    @Environment(\.ambientMotionPaused) private var ambientPaused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: false)) { context in
+        // 8 Hz for a ~3.9s breath, and paused entirely unless the camera page
+        // is the one you're looking at — the paged TabView keeps this mounted
+        // (and its shadow blur pass re-rendering) behind the feed otherwise.
+        TimelineView(.animation(minimumInterval: 1.0 / 8.0,
+                                paused: ambientPaused || reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let pulse = (sin(t * 1.6) + 1) / 2  // ~3.9s cycle
             HStack(spacing: 5) {

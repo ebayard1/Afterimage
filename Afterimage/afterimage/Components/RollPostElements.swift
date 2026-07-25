@@ -268,6 +268,7 @@ struct FilmStripSection<Cell: View>: View {
     @ViewBuilder var frameContent: (URL?) -> Cell
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.ambientMotionPaused) private var ambientPaused
 
     private var frameCount: Int { FilmStripMetrics.frameCount }
     private var spacing: CGFloat { FilmStripMetrics.frameSpacing }
@@ -286,8 +287,19 @@ struct FilmStripSection<Cell: View>: View {
         let frameH = frameW / FilmStripMetrics.frameAspect
 
         // 12 Hz: the idle drift moves a few points per second, so sub-frame
-        // steps stay invisible — and this clock re-renders the whole strip.
-        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: reduceMotion)) { context in
+        // steps stay invisible — and this clock re-renders the whole strip
+        // (every cell, both number bands, four sprocket rows), so it is the
+        // single most expensive tick on a card. Gated on `ambientMotionPaused`
+        // so it only runs for cards actually on screen, on the visible page.
+        //
+        // Deliberately NOT gated on `isFeedScrolling`, unlike the grain and
+        // the warmth flicker: `advance` is derived from wall-clock time, so
+        // stopping and restarting the clock lets `context.date` run on
+        // underneath and the film visibly snaps forward on release. Visibility
+        // gating has the same hazard in principle, but only for cards that
+        // were off screen while it happened — where the jump is unobservable.
+        TimelineView(.animation(minimumInterval: 1.0 / 12.0,
+                                paused: ambientPaused || reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             // Monotonic, scroll-independent advance — never moves backward, so the
             // loop wraps seamlessly with no perceived hard reset.
