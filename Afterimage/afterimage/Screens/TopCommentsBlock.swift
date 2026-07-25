@@ -103,12 +103,32 @@ struct TopCommentsBlock: View {
                 .padding(.top, 10)
             }
         }
-        .task {
-            if let id = album.id { service.startListening(albumId: id) }
+        // Live only while the card is actually on screen.
+        //
+        // This used to start on `.task` and detach on `.onDisappear`, which
+        // never fired: the Rolls feed is an eager `VStack`, so a card scrolled
+        // out of view is still mounted and SwiftUI never disappears it. The
+        // result was one live comment listener per revealed roll, forever —
+        // exactly the N+1 pile-up the old comment claimed to have fixed.
+        // Scroll visibility is the only signal that tracks reality here (the
+        // same reason `ambientVisibilityGate` exists), and it bounds the live
+        // listeners to the two or three cards you can actually see.
+        //
+        // The always-visible two-comment preview and the count badge both read
+        // from this listener, so gating on visibility is precisely what keeps
+        // them fed for the rolls being looked at. Reattaching delivers a fresh
+        // snapshot (served from Firestore's local cache), so nothing offscreen
+        // is ever seen stale.
+        .onScrollVisibilityChange(threshold: 0.1) { isVisible in
+            if isVisible {
+                if let id = album.id { service.startListening(albumId: id) }
+            } else {
+                service.stopListening()
+            }
         }
-        // Detach when the card leaves the viewport — the feed shows one of
-        // these per revealed roll, and keeping every roll's full comment
-        // thread live at once was an N+1 listener pile-up.
+        // Backstop for any non-feed use of this block, and for the feed itself
+        // when the whole page goes away. `onScrollVisibilityChange` only
+        // reports inside a scroll view.
         .onDisappear { service.stopListening() }
     }
 

@@ -16,7 +16,10 @@ struct CameraTabView: View {
     /// lifecycle (see MainTabView).
     let isActive: Bool
     @Environment(AuthService.self) private var auth
-    @State private var albumService = AlbumService()
+    /// Shared instance owned by `ContentView`. This page is mounted the whole
+    /// time the app is running (paged TabView), so a `@State` service here was
+    /// a third permanent copy of the albums listener.
+    @Environment(AlbumService.self) private var albumService
     @State private var showCreate = false
     @State private var showJoin = false
     @AppStorage("lastUsedAlbumId") private var lastUsedAlbumId: String = ""
@@ -53,14 +56,16 @@ struct CameraTabView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear {
-            if let uid = auth.uid { albumService.startListening(userId: uid) }
-        }
+        // No `startListening` here: `ContentView` owns the albums listener.
         .sheet(isPresented: $showCreate) {
-            CreateAlbumView().environment(auth)
+            CreateAlbumView()
+                .environment(auth)
+                .environment(albumService)
         }
         .sheet(isPresented: $showJoin) {
-            JoinAlbumView().environment(auth)
+            JoinAlbumView()
+                .environment(auth)
+                .environment(albumService)
         }
     }
 

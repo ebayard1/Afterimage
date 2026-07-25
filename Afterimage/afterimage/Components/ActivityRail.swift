@@ -38,50 +38,70 @@ struct ActivityRail: View {
     /// continuously (looping seamlessly via a doubled row); when they fit, it
     /// just sits still. The pan phase is derived from the wall clock, so data
     /// refreshes never make it jump — chips keep drifting from wherever they are.
+    ///
+    /// Two nested clocks, deliberately: a one-per-minute clock that owns the
+    /// *content*, and a 24 Hz clock inside it that owns only the *offset*.
     @ViewBuilder
     private var wire: some View {
-        if rowWidth > containerWidth, containerWidth > 0 {
-            // The chip rows are built ONCE, OUTSIDE the clock. Each chip owns
-            // an AsyncImage, so re-evaluating the doubled row per tick meant
-            // re-diffing two full avatar trees 30×/sec for an animation that
-            // only ever changes an x-offset. `EquatableView` compares the
-            // event list (plus a minute bucket, below) and returns the same
-            // rendered subtree, so a tick applies a transform and nothing else.
-            let rows = ChipRows(
-                events: events,
-                doubled: true,
-                // Chips print live relative timestamps ("2m"), so the bucket
-                // lets them refresh at most once a minute — and only when the
-                // rail's body is re-evaluated anyway — instead of never.
-                minuteBucket: Int(Date().timeIntervalSinceReferenceDate / 60),
-                onTap: onTapEvent,
-                onRowWidth: { rowWidth = $0 }
-            )
-            .equatable()
+        // Minute clock. Chips print live relative timestamps ("2m") computed
+        // against `now`, and nothing else re-evaluates them: making `ChipRows`
+        // Equatable is what stopped the 24 Hz clock from re-diffing the avatar
+        // trees, and it also stopped the stamps from ever advancing — a chip
+        // reading "2m" would still read "2m" an hour later, on the one element
+        // that exists to prove the app is live. So the bucket is driven from
+        // here instead of from `wire`'s enclosing body.
+        //
+        // The cost is one wakeup a minute, and it carries the same `paused:`
+        // as the marquee: a rail nobody can see does not need fresh timestamps.
+        // It does NOT reintroduce per-tick chip work — the 24 Hz clock is
+        // nested *inside* this one, so `ChipRows` is still constructed at most
+        // once a minute and still diffed by `==`. `TimelineView` is
+        // layout-transparent, so wrapping both branches changes no geometry.
+        TimelineView(.animation(minimumInterval: 60,
+                                paused: ambientPaused || reduceMotion)) { minuteCtx in
+            let minuteBucket = Int(minuteCtx.date.timeIntervalSinceReferenceDate / 60)
 
-            // 24 Hz: the drift is 22 pt/sec, so a tick moves it just under a
-            // point — below the visible step for a continuous pan, and a fifth
-            // fewer wakeups than the 30 Hz this ran at. Paused when the Rolls
-            // page isn't the one on screen.
-            TimelineView(.animation(minimumInterval: 1.0 / 24.0,
-                                    paused: ambientPaused || reduceMotion)) { ctx in
-                let span = rowWidth + 8
-                let t = ctx.date.timeIntervalSinceReferenceDate
-                let offset = -CGFloat((t * panSpeed).truncatingRemainder(dividingBy: Double(span)))
-                rows.offset(x: offset)
+            if rowWidth > containerWidth, containerWidth > 0 {
+                // The chip rows are built ONCE, OUTSIDE the pan clock. Each chip
+                // owns an AsyncImage, so re-evaluating the doubled row per tick
+                // meant re-diffing two full avatar trees 30×/sec for an
+                // animation that only ever changes an x-offset. `EquatableView`
+                // compares the event list plus the minute bucket and returns the
+                // same rendered subtree, so a pan tick applies a transform and
+                // nothing else.
+                let rows = ChipRows(
+                    events: events,
+                    doubled: true,
+                    minuteBucket: minuteBucket,
+                    onTap: onTapEvent,
+                    onRowWidth: { rowWidth = $0 }
+                )
+                .equatable()
+
+                // 24 Hz: the drift is 22 pt/sec, so a tick moves it just under a
+                // point — below the visible step for a continuous pan, and a fifth
+                // fewer wakeups than the 30 Hz this ran at. Paused when the Rolls
+                // page isn't the one on screen, or when the rail has scrolled off.
+                TimelineView(.animation(minimumInterval: 1.0 / 24.0,
+                                        paused: ambientPaused || reduceMotion)) { ctx in
+                    let span = rowWidth + 8
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    let offset = -CGFloat((t * panSpeed).truncatingRemainder(dividingBy: Double(span)))
+                    rows.offset(x: offset)
+                }
+                .frame(width: max(containerWidth, 1), alignment: .leading)
+                .clipped()
+            } else {
+                ChipRows(
+                    events: events,
+                    doubled: false,
+                    minuteBucket: minuteBucket,
+                    onTap: onTapEvent,
+                    onRowWidth: { rowWidth = $0 }
+                )
+                .equatable()
+                .padding(.horizontal, 16)
             }
-            .frame(width: max(containerWidth, 1), alignment: .leading)
-            .clipped()
-        } else {
-            ChipRows(
-                events: events,
-                doubled: false,
-                minuteBucket: Int(Date().timeIntervalSinceReferenceDate / 60),
-                onTap: onTapEvent,
-                onRowWidth: { rowWidth = $0 }
-            )
-            .equatable()
-            .padding(.horizontal, 16)
         }
     }
 
@@ -112,9 +132,10 @@ struct ActivityRail: View {
         /// Marquee mode draws the row twice so the loop is seamless: the pan
         /// wraps at `rowWidth + 8` with the second copy already in place.
         let doubled: Bool
-        /// Coarse wall-clock bucket. `ActivityEvent.relativeTime` is computed
-        /// against `now`, so equality has to change occasionally or the "2m"
-        /// stamps would freeze once the clock stopped driving re-evaluation.
+        /// Coarse wall-clock bucket, ticked once a minute by the outer clock in
+        /// `wire`. `ActivityEvent.relativeTime` is computed against `now`, so
+        /// equality has to change on a timer or the "2m" stamps freeze — this
+        /// is the only thing that advances them now that the pan clock can't.
         let minuteBucket: Int
         let onTap: (ActivityEvent) -> Void
         /// Reports the width of ONE row so the rail can compute the loop span.

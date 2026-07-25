@@ -3,9 +3,12 @@ import Combine
 
 struct HomeView: View {
     @Environment(AuthService.self) private var auth
-    @State private var albumService = AlbumService()
-    @State private var activityService = ActivityService()
-    @State private var notifService = NotificationService()
+    // Shared, app-wide instances owned by `ContentView`. They are NOT `@State`
+    // here: the paged TabView keeps this page mounted behind Camera and
+    // Profile, so per-view services would each hold their own live listener.
+    @Environment(AlbumService.self) private var albumService
+    @Environment(ActivityService.self) private var activityService
+    @Environment(NotificationService.self) private var notifService
     @State private var showCreate = false
     @State private var showJoin = false
     @State private var showNotifications = false
@@ -107,7 +110,16 @@ struct HomeView: View {
                         ScrollView {
                             // Live friend activity rail — non-scrolling-list content
                             // glued to the top so it sits inside the scroll view.
+                            // Gated on its own visibility, not just the page's:
+                            // it scrolls away with the feed, and its marquee is
+                            // the most expensive clock on this screen (a wide
+                            // clipped chip row of AsyncImage avatars). The
+                            // page-level gate alone would leave it panning off
+                            // screen, which is the exact case the gating exists
+                            // for. The modifier is layout-neutral (see
+                            // `AmbientVisibilityGate`).
                             ActivityRail(events: railEvents)
+                                .ambientVisibilityGate()
                                 .padding(.bottom, 8)
 
                             // MUST stay an eager VStack. The roll cards are
@@ -216,15 +228,13 @@ struct HomeView: View {
             .navigationDestination(for: Album.self) { album in
                 AlbumDetailView(album: album)
                     .environment(auth)
+                    .environment(albumService)
             }
         }
         .task {
             await NotificationScheduler.requestPermission()
-            if let uid = auth.uid {
-                albumService.startListening(userId: uid)
-                activityService.startListening(uid: uid)
-                notifService.startListening(uid: uid)
-            }
+            // Albums / activity / notifications are already listening —
+            // `ContentView` starts them from the auth uid.
             if !hasSeenFeedCoach {
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 withAnimation { showFeedCoach = true }
@@ -239,16 +249,23 @@ struct HomeView: View {
             }
         }
         .onReceive(ticker) { now = $0 }
+        // Sheets and covers get every shared service handed to them explicitly,
+        // the same way `auth` always has been — a presented view that reads a
+        // missing `@Environment(Service.self)` traps at runtime, and the
+        // compiler can't catch it.
         .sheet(isPresented: $showCreate) {
             CreateAlbumView()
                 .environment(auth)
+                .environment(albumService)
         }
         .sheet(isPresented: $showJoin) {
             JoinAlbumView()
                 .environment(auth)
+                .environment(albumService)
         }
         .sheet(isPresented: $showNotifications) {
             NotificationsView()
+                .environment(notifService)
         }
         .sheet(item: $membersSheetAlbum) { album in
             AlbumMembersSheet(album: album)
@@ -260,6 +277,7 @@ struct HomeView: View {
             NavigationStack {
                 AlbumDetailView(album: album)
                     .environment(auth)
+                    .environment(albumService)
             }
         }
         .fullScreenCover(item: $slideshowAlbum) { album in

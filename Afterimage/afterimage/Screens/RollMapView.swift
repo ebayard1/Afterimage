@@ -9,7 +9,9 @@ struct RollMapView: View {
     @State private var selected: Album?
     @State private var presentedAlbum: Album?
     @State private var cameraPosition: MapCameraPosition = .automatic
-    @State private var albumService = AlbumService()
+    /// Shared instance owned by `ContentView` — the pins come from the albums
+    /// listener that is already running, not a fresh query per map open.
+    @Environment(AlbumService.self) private var albumService
 
     private var sourceAlbums: [Album] {
         albumService.albums
@@ -52,14 +54,13 @@ struct RollMapView: View {
             NavigationStack {
                 AlbumDetailView(album: album)
                     .environment(auth)
+                    .environment(albumService)
             }
         }
-        // Firestore listeners don't self-remove on dealloc.
-        .onDisappear { albumService.stopListening() }
         .onAppear {
-            if let uid = auth.uid {
-                albumService.startListening(userId: uid)
-            }
+            // No start/stop of the albums listener here — it is app-owned and
+            // shared, so tearing it down on dismiss would empty the feed.
+            //
             // Frame the pins
             if let first = pins.first {
                 cameraPosition = .region(MKCoordinateRegion(

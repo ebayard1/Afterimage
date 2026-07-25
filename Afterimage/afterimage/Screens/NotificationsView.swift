@@ -30,7 +30,10 @@ struct NotificationsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthService.self) private var auth
     @Environment(UserService.self) private var users
-    @State private var notifService = NotificationService()
+    /// Shared instance owned by `ContentView` — the inbox listener is already
+    /// running (the bell badge on Rolls and Profile reads the same one), so
+    /// this sheet just displays it rather than opening a third copy.
+    @Environment(NotificationService.self) private var notifService
     @State private var friendService = FriendService()
     @State private var showFriendsList = false
 
@@ -59,14 +62,16 @@ struct NotificationsView: View {
             VStack { floatingHeader; Spacer() }
         }
         .task {
+            // `notifService` is app-owned and already listening; only the
+            // friend-request listener is scoped to this sheet.
             if let uid = auth.uid {
-                notifService.startListening(uid: uid)
                 friendService.startListening(uid: uid)
             }
         }
-        // Firestore listeners don't self-remove on dealloc.
+        // Firestore listeners don't self-remove on dealloc. Only tear down the
+        // one this view started — stopping the shared notification listener
+        // here would blank the bell badge on Rolls and Profile.
         .onDisappear {
-            notifService.stopListening()
             friendService.stopListening()
         }
         .sheet(isPresented: $showFriendsList) { FriendsListView() }

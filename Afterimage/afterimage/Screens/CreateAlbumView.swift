@@ -6,7 +6,10 @@ struct CreateAlbumView: View {
     @Environment(AuthService.self) private var auth
     @Environment(UserService.self) private var users
     @Environment(\.dismiss) private var dismiss
-    @State private var albumService = AlbumService()
+    /// Shared instance owned by `ContentView`. Only the non-listener methods
+    /// are used here, but there is one source of truth for the album list so
+    /// the new roll lands in the same array every screen is reading.
+    @Environment(AlbumService.self) private var albumService
 
     /// The user's accepted friends, available to pre-invite to the new roll.
     private var realFriends: [PersonRef] {
