@@ -71,6 +71,11 @@ struct ProfileView: View {
                             ForEach(Array(developing.enumerated()), id: \.element.id) { idx, album in
                                 ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
                                     rollCard(album, index: idx)
+                                        // Stops the strip drift, grain and
+                                        // flicker on cards scrolled off
+                                        // screen. Environment only — no
+                                        // layout effect.
+                                        .ambientVisibilityGate()
                                 }
                             }
                         }
@@ -97,6 +102,7 @@ struct ProfileView: View {
                         ForEach(Array(revealed.enumerated()), id: \.element.id) { idx, album in
                             ScrollFadeIn(delay: Double(idx) * 0.04 + 0.05, distance: 10) {
                                 rollCard(album, index: idx)
+                                    .ambientVisibilityGate()
                             }
                         }
 
