@@ -1,11 +1,10 @@
 # Afterimage — Handoff (continue in a new chat)
 
-_Last updated 2026-07-24 (overnight session). Paste this into a new chat to pick up where we left off._
+_Last updated 2026-07-24 (afternoon session). Paste this into a new chat to pick up where we left off._
 
-> **Git state:** on branch `feat/full-app-rebuild`, last commit `26bfc51`
-> ("Calibrate camera buttons on-device; press states, camera haptics, instant
-> counter, portrait lock"). Working tree clean except this file.
-> `main` has been fast-forwarded to match (see "Git layout" below).
+> **Git state:** on branch `feat/full-app-rebuild`, last feature commit `bfef0a9`
+> ("Frame-based button system: press-state art, inpainted shell, REC lamp,
+> haptics"). `main` is fast-forwarded to the same tip.
 > **⚠️ NO GIT REMOTE is configured** — everything lives only on this Mac.
 > If a GitHub repo exists (or should), add it: `git remote add origin <url>`
 > then `git push -u origin main feat/full-app-rebuild`.
@@ -18,16 +17,17 @@ can install it.
 
 ## Key facts a new chat needs
 - **Project root:** `~/Desktop/Afterimage/`
-- **Xcode project:** `~/Desktop/Afterimage/afterimage/afterimage.xcodeproj` (scheme `afterimage`)
-- **Source:** `~/Desktop/Afterimage/afterimage/afterimage/`
+- **Xcode project:** `~/Desktop/Afterimage/Afterimage/afterimage.xcodeproj` (scheme `afterimage`)
+  — NOTE: the inner project folder was renamed `afterimage` → `Afterimage` on disk
+  (2026-07-24) to match git's tracked capitalization; use capital-A paths in git commands.
+- **Source:** `~/Desktop/Afterimage/Afterimage/afterimage/`
 - **Firebase project id:** `afterimage-671e4` (console name "GroupCapsule"). Bundle id
   `com.ethanbayard.afterimage`. Storage bucket `afterimage-671e4.firebasestorage.app`.
 - **Apple Developer Program:** ACTIVE (paid, Individual). **Team ID `TM7HX4FKWA`**.
 - **iPhone (devicectl id):** `1B32AB5E-78B3-5127-90D9-DF7A73153D81` ·
   **xcodebuild destination UDID:** `00008140-0010396901A2801C` (iPhone 16 Pro, iOS 26.5.2)
 - **Min iOS: 26.0** — ⚠️ friends on older iPhones CANNOT install. (The `.glassEffect`
-  tab bar that gated this is GONE now — bar is plain icons — so lowering the min may
-  be back on the table. Still an OPEN decision.)
+  tab bar that gated this is GONE — audit for other 26-only API before lowering. OPEN.)
 - **App is PORTRAIT-ONLY** (landscape removed in both build configs).
 - **App label on home screen is "groupRoll"** (PRODUCT_NAME), not "Afterimage". KEEP for now.
   Built product is `groupRoll.app`.
@@ -36,103 +36,95 @@ can install it.
 
 ## Git layout
 - `feat/full-app-rebuild` — the working branch, all session commits land here.
-- `main` — fast-forwarded to the same tip (user wants every new feature on main).
-  After each feature commit: `git checkout main && git merge --ff-only feat/full-app-rebuild && git checkout feat/full-app-rebuild`
-  (or just keep fast-forwarding main the same way).
+- `main` — fast-forwarded to the same tip after each feature commit:
+  `git checkout main && git merge --ff-only feat/full-app-rebuild && git checkout feat/full-app-rebuild`
 - No remote. See warning at top.
+- Untracked junk in the worktree: macOS " 2" duplicate files (`SESSION_LOG 2.md`,
+  `firebase 2.json`, `firestore 2.rules`, `functions/* 2.*`) — deliberately NOT
+  committed; safe to delete or gitignore.
 
-## ✅ This session (2026-07-23 → 24) — ALL COMMITTED
+## ✅ This session (2026-07-24 afternoon) — COMMITTED `bfef0a9`
 
-Commits, oldest first:
-1. `4b940a0` — glass tab bar (later removed again), film-strip dividers (6px black +
-   6pt rounded corners), Profile opens rolls exactly like the Rolls feed (push
-   developing / slideshow developed — no more modal sheet), status bar hidden on camera.
-2. `5a85682` — **new glossy shell art (904×1740)** + **full video mode**:
-   - `Shot.videoURL` (poster still stays in `photoURL` → thumbnails/heroes never autoplay)
-   - `ShotService.uploadVideo` (.mov + poster to Storage)
-   - `CameraController`: movie output, poster-frame extractor
-   - tap = photo · hold 0.32s = video (red face + pulsing ring + live timer)
-   - playback on tap only: `RollSlideshowView` autoplays current video frame then
-     advances; `PhotoViewerView` shows poster + play button
-   - **storage.rules now allow `video/*` < 200MB — DEPLOYED** ✅
-   - mic usage string added to both build configs
-3. `26bfc51` — on-device button calibration + UX polish (see bullet list in the
-   commit message; highlights below).
+**Full camera reskin: new shell art + frame-based animated button system.**
 
-### Camera page — how the controls work now
-- **Flash**: sheet art ALWAYS visible (needed for on/off glyph swap), presses inward
-  with a white ring (`ControlButtonStyle`).
-- **Flip**: BAKED button at rest; the sheet art appears scaled to 0.90 while pressed
-  (`PressRevealButtonStyle`). ⚠️ Never put a flexible shape (bare `Circle().fill`)
-  inside a ButtonStyle body — it inflates the layout to the full proposed size and
-  once made the whole screen the flip button's tap target.
-- **Shutter**: tap = photo — `ShutterFace` (a disc SLICED FROM THE SHELL ART, so
-  pixel-identical) presses in at 0.92; hold = video — `RecordFace` + ring + timer.
-  Red is VIDEO-ONLY, never shows on a photo tap.
-- **Counter badge**: green Menlo 28pt w/ glow, `.position(x: 86, y: flashCenter.y*s)`.
-  Ticks INSTANTLY via `optimisticShotCount` (rolls back on failed upload; server
-  listener count wins when it catches up).
-- **Haptics**: rigid click + light "film advance" clack 90ms later on capture.
-- **Mic attaches only while recording video** (`startRecording`/`detachAudio`) — a
-  permanently-attached mic pins iOS's mic-in-use pill over the Dynamic Island.
-- Camera page backdrop is `Color.black` (NOT `Palette.background` — the warm dark
-  reads as a grey panel below the shell art). Same for the album full-screen camera.
+- **New shell art** (`CameraShell`, still 904×1740 full-bleed): glossy body with
+  speaker grille (bottom-left), thumbwheel with +/− (right edge, both DECORATIVE
+  for now), red REC lamp dome, baked "hold to video" caption under the shutter.
+  Source files (in `~/Downloads/`): `camera-ui-original-based-red-light-{on,off}-fixed-text.png`
+  + `button-contact-sheet-last-column-reversed-preview.png` (1536×2048, 3×4 grid).
+- **Green placeholder discs** in the source art mark button positions. They are
+  **INPAINTED OUT** of the shipped CameraShell asset (nearest-neighbor fill) so
+  green can never peek through. Measured centers (shell px): FLASH (650,154),
+  FLIP (786,154), SHUTTER (452,1506); green discs d=129/129/269.
+- **10 sliced button frames** (all in `Assets.xcassets` AND `art-sliced/`;
+  regenerate with `tools/slice-camera-buttons.py`):
+  - `FlipRest`/`FlipPressed` — 2-frame press.
+  - `FlashOnRest`/`FlashOnPressed`/`FlashOffPressed`/`FlashOffRest` — a tap runs
+    the 4-frame cycle (old rest → old pressed → new pressed [90ms via
+    `flashSettleFrame`] → new rest); reverse order when toggling back.
+  - `ShutterRest`/`ShutterPressed`/`RecordPressed`/`RecordRest` — tap photo =
+    black frames only (red NEVER on a photo); hold 0.32s = RecordPressed one
+    beat (120ms, `recordFaceSettled`) → RecordRest steady while recording.
+  - ⚠️ Slices are ZERO-margin — the disc exactly fills the PNG canvas — so the
+    rendered disc = the SwiftUI frame size. (Round 1 had a 4px margin that
+    `scaledToFit` traded for ~2% shrink → green rings on device. Don't repeat.)
+  - All frames in a column share the SAME outer diameter (the "pressed" look is
+    baked inside the disc), so frames swap 1:1.
+- **`FrameSwapButtonStyle`** (in CameraView.swift): instant art swap on
+  `isPressed` (mechanical, deliberately no crossfade), opaque black backing
+  disc (hit target + peek-through insurance), haptics: rigid 0.8 on press-down,
+  light 0.5 on release. Shutter press-down also fires rigid 0.8 in its gesture.
+  **ALL white ring / glow press indicators are DELETED** (per Ethan).
+- **REC lamp** (`RecLampOn`, rect x683 y1149 221×233 in shell space): the lit
+  dome + glow sliced from the light-ON shell via ON/OFF pixel diff, edges
+  feathered 16px (round 1's hard crop showed a square seam). Winks 0.35s on
+  photo capture (`lampWink`); blinks 1s on / 1s off while recording
+  (TimelineView keyed to `recordStart`).
+- **REC readout** moved INSIDE the viewfinder glass: top-left, camcorder-style
+  "● REC 0:14", dot blinks 1/s.
+- Shell map constants (CameraView.Shell): screen (241,368,446×768) — art
+  otherwise framed exactly like before (`s = width/904`, full-bleed, no nudge).
+  flashDiameter/flipDiameter 134, shutterDiameter 276, shutterRadius 138 (hit).
+- Alignment jig still exists (`CameraView.showAlignmentJig`) and now hides the
+  overlay buttons when on.
 
-### Shell map (CameraView.Shell) — 904×1740 px space, glossy art, full-bleed
-- scale: `s = geo.size.width / 904` (NO overfill, NO nudge — art has no margins)
-- screen cutout `(241, 368, 446×769)` — viewfinder overfills by 10px each side
-- flash center `(649, 162)`, overlay d `136` (sized to swallow the baked button + its
-  bottom drop-shadow skirt)
-- flip center `(781, 146)`, pressed-art d `112`
-- shutter center `(465, 1505)`, hit r `126`, RecordFace/ShutterFace d `224`/`252`
-- `rollCapacity = 24`
-- **DEBUG alignment jig**: set `CameraView.showAlignmentJig = true` → crosshair +
-  reference rings (pitch 4 shell px) at the mapped coordinates, overlays hidden.
-  This is how the buttons were calibrated; reuse it after any art swap.
+### ⚠️ OPEN BUG — flip button "turns fully green when pressed" (round-1 build)
+Reported on the round-1 build. `FlipPressed` is a valid PNG, zero green pixels,
+present in the compiled Assets.car (`assetutil` verified) — root cause NOT
+found. Round 2's inpainted shell + black backing discs make the symptom
+impossible (worst case = dark disc), but **if the pressed flip frame doesn't
+show at all** on the current build, the image genuinely isn't resolving —
+next step: `devicectl` console logs while pressing, look for "No image named".
+**User had NOT yet verified the round-2 build when this handoff was written.**
 
-### Tab bar (MainTabView)
-Bare floating icons — NO pill, NO glass. Height is dynamic:
-`barHeight = fullScreenHeight − width×(1740/904) − bottomSafeInset` so the bar's top
-edge exactly meets the shell's bottom edge on every device. Icons 24pt.
-Side effect: Rolls/Profile content ends higher above the icons (user hasn't objected).
-
-### Asset slicing (button art)
-6 buttons sliced from `~/Downloads/button-contact-sheet.png` (3×2 grid, discs are
-grid-centered, disc radius 189px) via circle-fit + tight alpha mask + checker kill +
-1.5px edge feather. ⚠️ The first slicing attempt used dark-pixel CENTROIDS — the
-sheet's drop shadows pulled centers off and left opaque checker fringe that looked
-like misalignment on device. If art changes, re-run the fit approach, and verify with
-the alignment jig. `FlashOffRing`/`RecordFaceRing` imagesets exist but are UNUSED
-(the ring is drawn in SwiftUI).
-
-### Verification workflow that finally worked (no more guessing)
-**QuickTime Player → File → New Movie Recording → source dropdown → Screen: iPhone**
-gives a LIVE view of the phone screen on the Mac even while the app uses the camera.
-(iPhone Mirroring does NOT work here — it refuses to connect while the phone camera
-is in use.) Claude drove this via computer-use: screenshot → zoom on the buttons →
-read deltas against the alignment jig → fix constants → rebuild. Reuse this loop for
-any pixel-level UI work.
+### Wireless dev loop (no cable needed!)
+- Build + install + launch works over Wi-Fi/**personal hotspot** (device shows
+  "available (paired)" in `xcrun devicectl list devices`).
+- **Verification = user sends iPhone screenshots** — measure them against the
+  shell map / alignment jig in Python, fix constants, rebuild. QuickTime
+  Screen:iPhone live view (previous loop) requires USB — hotspot can't do it.
+- Reminder: DEBUG builds sign out on every fresh install (`signOutIfFreshBuild`).
 
 ## ⏳ Open items (in rough priority order)
-1. **User verification pass** on the latest build: tab bar height/icons on all 3 pages,
-   flip press feel, shutter press-in, video record→upload→tap-to-play in slideshow +
-   photo viewer, instant counter, no mic pill on camera page.
-2. **Set up a git remote and push** — repo currently exists ONLY on this Mac.
+1. **User verification pass on the round-2 build**: green fully gone, lamp seam
+   gone, flip pressed frame (see OPEN BUG above), haptic feel, flash 4-frame
+   cycle timing (90ms beat), REC readout placement, lamp blink rhythm (1s/1s —
+   user said "every 2 seconds", interpretation unconfirmed).
+2. **Set up a git remote and push** — repo exists ONLY on this Mac.
 3. **Deploy Firestore rules** (carryover): `cd ~/Desktop/Afterimage && firebase deploy --only firestore:rules`
 4. **Deploy functions** (carryover: self-activity on the wire): `firebase deploy --only functions`
-5. **Apple Music integration** for roll soundtracks (free/no-subscription path —
-   MusicKit preview clips or user-library playback; design TBD).
-6. **TestFlight**: archive 1.0, bump build number (camera/UI + video changed a lot).
-7. **Decision: lower the iOS 26 minimum?** The glass tab bar that required 26 is gone;
-   audit for other 26-only API before deciding.
-8. Possible nudges: bar icon size (24), flash overlay (649,162,d136), flip (781,146,d112),
-   record-face d224, hold-to-record threshold (0.32s), counter x (86).
+5. **Apple Music integration** for roll soundtracks (free/no-subscription path).
+6. **TestFlight**: archive 1.0, bump build number (big UI changes since last).
+7. **Decision: lower the iOS 26 minimum?** Audit for 26-only API first.
+8. Possible nudges: button diameters (134/134/276), flash settle beat (90ms),
+   record settle beat (120ms), lamp wink (350ms), hold-to-record threshold
+   (0.32s), REC readout padding (16/14), wheel/grille functionality (zoom?).
 
 ## Build / verify commands
 
 ```sh
-# Build for the physical iPhone:
-xcodebuild -project ~/Desktop/Afterimage/afterimage/afterimage.xcodeproj -scheme afterimage \
+# Build for the physical iPhone (works over hotspot):
+xcodebuild -project ~/Desktop/Afterimage/Afterimage/afterimage.xcodeproj -scheme afterimage \
   -configuration Debug -destination 'id=00008140-0010396901A2801C' \
   -derivedDataPath /tmp/afterimage-device-build -allowProvisioningUpdates build
 # Install (retry once if it throws CoreDeviceError 4000):
@@ -142,19 +134,25 @@ xcrun devicectl device install app --device 1B32AB5E-78B3-5127-90D9-DF7A73153D81
 xcrun devicectl device process launch --device 1B32AB5E-78B3-5127-90D9-DF7A73153D81 \
   com.ethanbayard.afterimage
 
+# Re-slice buttons / re-inpaint shell after any art change:
+python3 tools/slice-camera-buttons.py   # reads ~/Downloads sources, writes art-sliced/ + Assets.xcassets
+
 # Deploy backend (keep storage rules deployed!):
 cd ~/Desktop/Afterimage && firebase deploy --only storage,firestore:rules,functions
 ```
 
 ## Gotchas already solved (still true)
 - Deployed Storage rules must stay deployed (default deny-all broke uploads once).
-  They now allow `image/*` (<12MB) AND `video/*` (<200MB) under album shot paths.
+  They allow `image/*` (<12MB) AND `video/*` (<200MB) under album shot paths.
 - **DEBUG builds sign out on EVERY new build** (`signOutIfFreshBuild()` keys off the
-  executable's mod date). It was temporarily disabled during the alignment loop and
-  is RESTORED — if you're iterating on-device UI and the login friction hurts,
-  comment out the call in `AuthService.init` (and restore before committing).
+  executable's mod date). Comment out in `AuthService.init` if iterating hurts
+  (restore before committing).
 - Firestore shot-create rules don't whitelist fields — `videoURL` passes with no
   rules change.
+- Button slicing: fit circles from the dark disc's TOP edge + max width — NEVER
+  centroids (drop shadows pull centers off; bit us twice now).
+- Git dir case: repo tracks `Afterimage/` (capital); disk now matches. If git
+  add skips untracked files under it, check path capitalization first.
 - "Glare not showing" on phone = iPhone Reduce Motion / Reduce Transparency (intended).
 - dSYM upload warnings for Firebase/grpc libs are harmless.
 - App icon needs the FULL explicit size set in `AppIcon.appiconset`.
