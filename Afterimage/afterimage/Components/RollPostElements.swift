@@ -59,10 +59,28 @@ extension Color {
 // the whole row flickers as one piece of backlit film. Top and bottom edges get
 // different `seed` phase offsets so they don't flicker in lockstep.
 //
-// The flame is SCROLL-DRIVEN: it only ticks while the enclosing feed is
-// actively scrolling (via the `isFeedScrolling` environment flag published by
-// the feeds' `.onScrollPhaseChange`) and freezes mid-flicker the moment the
-// feed comes to rest — like the light steadying when the film stops moving.
+// The flame runs AT REST and freezes DURING SCROLL — the opposite of the
+// original wiring. It was previously scroll-driven ("the light steadies when
+// the film stops moving"), but that put a 24 Hz mask + animated-shadow rebuild
+// per band, two bands per card, into the exact window where the frame budget is
+// tightest (PERF_DIAGNOSIS §3b). At rest the flame costs nothing that matters
+// and is where the "living film" character actually reads; during a flick the
+// eye cannot resolve a 24 Hz edge-print jitter anyway. So: `paused` ORs in
+// `isFeedScrolling` alongside the standard ambient gates.
+//
+// Both layers are now STATIC and cacheable — the masked amber fill and its
+// fixed-radius bloom never change their inputs, so the render server can keep
+// the rasterized layer and the tick only animates `opacity` on it. That is the
+// difference between "recompute a mask + a Gaussian every tick" and "reblend
+// two cached layers", which is the whole point of PERF_DIAGNOSIS's rule 4.
+// The colour ramp is preserved by fading the MAX-amber fill in over the ember
+// base rather than recolouring: ember (0.83, 0.42, 0.10) at flame 0 →
+// amber (1.00, 0.70, 0.28) at flame 1, identical endpoints, and the linear
+// blend between them matches the old per-channel lerp exactly.
+//
+// Rate is 12 Hz, not 24 — `candle(t)`'s fastest term is sin(23.9·t) ≈ 3.8 Hz,
+// so 12 Hz is still ~3 samples per cycle of the fastest jitter and the flicker
+// reads the same.
 //
 // Under `accessibilityReduceMotion` the flame freezes to a steady mid-amber
 // glow — no flicker, no pulse.
@@ -70,31 +88,37 @@ extension Color {
 private struct CandleFlicker: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isFeedScrolling) private var isScrolling
+    @Environment(\.ambientMotionPaused) private var ambientPaused
     /// Phase offset (seconds) so separate rows flicker independently.
     var seed: Double = 0
 
+    /// The brightest point of the ramp — a warm amber, never cream/white.
+    /// Faded over the row's own ember orange by `flame`, which reproduces the
+    /// old per-channel interpolation (0.83→1.00, 0.42→0.70, 0.10→0.28).
+    private static let amber = Color(red: 1.00, green: 0.70, blue: 0.28)
+    /// The bloom colour, unchanged from the old animated `.shadow`.
+    private static let bloom = Color(red: 1.0, green: 0.72, blue: 0.36)
+
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0,
-                                paused: reduceMotion || !isScrolling)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 12.0,
+                                paused: reduceMotion || isScrolling || ambientPaused)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate + seed
             let flame = reduceMotion ? 0.5 : Self.candle(t)
 
-            // Ember orange (flame 0) → warm amber (flame 1). The brightest point
-            // is a warm amber, never cream/white — max green 0.70, blue 0.28.
-            let warm = Color(
-                red:   0.83 + flame * 0.17,   // 0.83 → 1.00
-                green: 0.42 + flame * 0.28,   // 0.42 → 0.70
-                blue:  0.10 + flame * 0.18    // 0.10 → 0.28
-            )
-            let glowRadius = 2 + flame * 7.0            // 2 → 9pt bloom
-            let glowOpacity = 0.20 + flame * 0.40       // 0.20 → 0.60
-
             content
-                // Repaint every glyph/bar with the current flame colour.
-                .overlay { warm.mask(content) }
-                // Warm bloom that flickers with the flame.
-                .shadow(color: Color(red: 1.0, green: 0.72, blue: 0.36).opacity(glowOpacity),
-                        radius: glowRadius)
+                // Bloom: a masked fill at a FIXED blur radius, sitting BEHIND
+                // the glyphs exactly where the old `.shadow` did, faded by the
+                // flame. Replaces `radius: 2 → 9`, which re-ran a Gaussian
+                // every tick. 6pt sits mid-way through the old range; the swell
+                // now reads as brightness rather than spread.
+                .background {
+                    Self.bloom.mask(content)
+                        .blur(radius: 6)
+                        .opacity(flame * 0.45)
+                }
+                // Static masked amber layer — inputs never change, so this
+                // rasterizes once and the tick only reblends it.
+                .overlay { Self.amber.mask(content).opacity(flame) }
         }
     }
 
