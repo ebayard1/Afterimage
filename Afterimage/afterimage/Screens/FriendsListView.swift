@@ -116,6 +116,8 @@ struct FriendsListView: View {
                 friendService.startListening(uid: uid)
             }
         }
+        // Firestore listeners don't self-remove on dealloc.
+        .onDisappear { friendService.stopListening() }
         .sheet(item: $presentedPerson) { person in
             OtherProfileView(person: person)
         }

@@ -285,7 +285,9 @@ struct FilmStripSection<Cell: View>: View {
         let step = frameW + spacing
         let frameH = frameW / FilmStripMetrics.frameAspect
 
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion)) { context in
+        // 12 Hz: the idle drift moves a few points per second, so sub-frame
+        // steps stay invisible — and this clock re-renders the whole strip.
+        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             // Monotonic, scroll-independent advance — never moves backward, so the
             // loop wraps seamlessly with no perceived hard reset.

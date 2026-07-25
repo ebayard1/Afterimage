@@ -64,6 +64,11 @@ struct NotificationsView: View {
                 friendService.startListening(uid: uid)
             }
         }
+        // Firestore listeners don't self-remove on dealloc.
+        .onDisappear {
+            notifService.stopListening()
+            friendService.stopListening()
+        }
         .sheet(isPresented: $showFriendsList) { FriendsListView() }
     }
 

@@ -106,6 +106,10 @@ struct TopCommentsBlock: View {
         .task {
             if let id = album.id { service.startListening(albumId: id) }
         }
+        // Detach when the card leaves the viewport — the feed shows one of
+        // these per revealed roll, and keeping every roll's full comment
+        // thread live at once was an N+1 listener pile-up.
+        .onDisappear { service.stopListening() }
     }
 
     private var headerBar: some View {

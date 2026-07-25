@@ -12,7 +12,12 @@ struct ActivityEvent: Identifiable, Hashable {
         case taggedYou        // "tagged you in Festival"
     }
 
-    let id = UUID()
+    /// Identity derived from content, NOT a fresh UUID: the rail rebuilds its
+    /// events array on every render pass, and unstable ids made SwiftUI tear
+    /// down and re-animate every chip each time — the "sudden jolts."
+    var id: String {
+        "\(kind.rawValue)|\(actorUsername)|\(albumName ?? "")|\(detail ?? "")|\(happenedAt.timeIntervalSince1970)"
+    }
     let kind: Kind
     let actorUsername: String  // e.g. "@sam_k"
     let actorPhotoSeed: String // picsum seed for avatar (sample mode)

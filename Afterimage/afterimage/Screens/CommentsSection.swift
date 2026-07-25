@@ -64,6 +64,8 @@ struct CommentsSection: View {
         .task {
             if let id = album.id { service.startListening(albumId: id) }
         }
+        // Firestore listeners don't self-remove on dealloc.
+        .onDisappear { service.stopListening() }
         .safeAreaInset(edge: .bottom) { composer }
         .sheet(isPresented: $showTagPicker) {
             TagShotPicker(

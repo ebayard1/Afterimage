@@ -94,9 +94,10 @@ struct LivingFilmGrain: View {
     var density: Int = 70
     /// Per-speck opacity.
     var opacity: Double = 0.045
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: reduceMotion)) { context in
             Canvas { ctx, size in
                 // Seed from the current time bucket so the grain twinkles
                 // deterministically across the population of specks.
@@ -131,7 +132,9 @@ struct WarmthFlicker: ViewModifier {
     var floor: Double = 0.93
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: false)) { context in
+        // 10 Hz is invisible for a multi-second opacity sine and halves the
+        // wakeups — several of these run on every card and headline.
+        TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let cycle = (sin(t * (2 * .pi / period)) + 1) / 2  // 0…1
             let alpha = floor + (1.0 - floor) * cycle

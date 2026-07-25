@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 /// Process-wide cache for decoded film-strip frames, keyed by URL.
 ///
@@ -9,11 +10,52 @@ import UIKit
 /// re-enters a frame it appears instantly with no shimmer, keeping the pan
 /// smooth instead of re-hitting the network on each swap.
 enum FilmImageCache {
-    static let shared: NSCache<NSURL, UIImage> = {
+    // nonisolated(unsafe): NSCache is documented thread-safe, and the whole
+    // point of these helpers is to be callable from detached decode tasks —
+    // under the project's default MainActor isolation they'd otherwise hop
+    // every decode back onto the main thread.
+    nonisolated(unsafe) static let shared: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
         c.countLimit = 240          // plenty for several full rolls on screen
+        // Hard byte ceiling — without it, 240 full-res decodes could pin
+        // multiple GB and ride the app into memory-pressure churn.
+        c.totalCostLimit = 256 << 20
         return c
     }()
+
+    /// Insert with a real byte cost so `totalCostLimit` can do its job.
+    nonisolated static func insert(_ image: UIImage, forKey key: NSURL) {
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+        shared.setObject(image, forKey: key, cost: cost)
+    }
+
+    /// Cache key for a full-screen-tier decode of `url` (slideshow, viewer) —
+    /// distinct from the plain-url key so a small film-strip decode can never
+    /// be served to a full-screen surface, or vice versa.
+    nonisolated static func fullKey(_ url: URL) -> NSURL {
+        NSURL(string: url.absoluteString + "#tier=full") ?? (url as NSURL)
+    }
+
+    /// Decode `data` downsampled so its longest side is at most `maxDimension`
+    /// pixels, with the bitmap decoded immediately (off the render path).
+    /// Full-camera JPEGs are far bigger than any screen; decoding them at
+    /// display size is dramatically cheaper in CPU and memory.
+    nonisolated static func decodeDownsampled(_ data: Data, maxDimension: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, srcOpts) else {
+            return UIImage(data: data)
+        }
+        let thumbOpts = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
+    }
 }
 
 /// Image view tailored for the 35mm film-strip frames on the Rolls feed.
@@ -115,8 +157,10 @@ struct FilmFrameImage: View {
                    !(200..<300).contains(http.statusCode) {
                     lastReason = "HTTP \(http.statusCode)"
                     if (400..<500).contains(http.statusCode) { break }   // won't recover
-                } else if let img = UIImage(data: data) {
-                    FilmImageCache.shared.setObject(img, forKey: url as NSURL)
+                } else if let img = FilmImageCache.decodeDownsampled(data, maxDimension: 700) {
+                    // Film cells render ≤ ~175 pt; decoding a 12 MP camera JPEG
+                    // for them was a ~40× over-decode in CPU and memory.
+                    FilmImageCache.insert(img, forKey: url as NSURL)
                     await apply(image: img, fail: nil)
                     return
                 } else {

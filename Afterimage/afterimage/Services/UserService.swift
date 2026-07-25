@@ -20,6 +20,9 @@ final class UserService {
     @ObservationIgnored private let db = Firestore.firestore()
     @ObservationIgnored private var profileListener: ListenerRegistration?
     @ObservationIgnored private var inFlight: Set<String> = []
+    /// Uids whose fetch failed (deleted account, bad doc) — never refetched
+    /// this session. See `profile(for:)`.
+    @ObservationIgnored private var failed: Set<String> = []
 
     // MARK: - Current user
 
@@ -100,13 +103,18 @@ final class UserService {
     /// off a one-shot fetch that populates `cache` (triggering a view update).
     func profile(for uid: String) -> UserProfile? {
         if let hit = cache[uid] { return hit }
-        guard !inFlight.contains(uid) else { return nil }
+        // Negative cache: a deleted/undecodable user must not refetch on every
+        // body evaluation — this is called from view bodies that re-render on
+        // scroll, so one bad uid used to produce a sustained request storm.
+        guard !failed.contains(uid), !inFlight.contains(uid) else { return nil }
         inFlight.insert(uid)
         Task { @MainActor in
             defer { inFlight.remove(uid) }
             if let snap = try? await db.collection("users").document(uid).getDocument(),
                let profile = try? snap.data(as: UserProfile.self) {
                 cache[uid] = profile
+            } else {
+                failed.insert(uid)
             }
         }
         return nil

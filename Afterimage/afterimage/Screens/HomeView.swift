@@ -69,7 +69,7 @@ struct HomeView: View {
                 // Ambient sunrise wash that breathes — same metaphor as the
                 // detail surfaces, so the whole app shares a single living
                 // backdrop instead of going neutral in the feed.
-                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: false)) { context in
+                TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let pulse = (sin(t * (2 * .pi / 8.4)) + 1) / 2
                     RadialGradient(
@@ -100,7 +100,11 @@ struct HomeView: View {
                             ActivityRail(events: railEvents)
                                 .padding(.bottom, 8)
 
-                            VStack(alignment: .leading, spacing: 28) {
+                            // LazyVStack: cards build as they scroll into view
+                            // instead of the whole account at once — every card
+                            // carries live listeners and animation clocks, so
+                            // eager construction scaled cost with account size.
+                            LazyVStack(alignment: .leading, spacing: 28) {
                                 if let memory = onThisDay {
                                     OnThisDayCard(memory: memory) {
                                         // Open the memory's album just like tapping it in the feed.

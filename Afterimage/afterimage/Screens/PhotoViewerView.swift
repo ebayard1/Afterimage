@@ -72,6 +72,11 @@ struct PhotoViewerView: View {
             shotService.startListening(albumId: albumId, currentUserId: auth.uid ?? "")
             commentService.startListening(albumId: albumId)
         }
+        // Firestore listeners don't self-remove on dealloc.
+        .onDisappear {
+            shotService.stopListening()
+            commentService.stopListening()
+        }
         .sheet(isPresented: $showComments) {
             NavigationStack {
                 ZStack {

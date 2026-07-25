@@ -54,6 +54,8 @@ struct RollMapView: View {
                     .environment(auth)
             }
         }
+        // Firestore listeners don't self-remove on dealloc.
+        .onDisappear { albumService.stopListening() }
         .onAppear {
             if let uid = auth.uid {
                 albumService.startListening(userId: uid)

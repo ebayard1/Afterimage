@@ -7,23 +7,73 @@ struct ActivityRail: View {
     let events: [ActivityEvent]
     var onTapEvent: (ActivityEvent) -> Void = { _ in }
 
+    /// Newsstand-ticker pan speed, points per second. Slow — a drift, not a scroll.
+    private let panSpeed: Double = 22
+    /// Measured width of one full row of chips (single copy).
+    @State private var rowWidth: CGFloat = 0
+    /// Measured width of the rail itself.
+    @State private var containerWidth: CGFloat = 0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(events.enumerated()), id: \.element.id) { idx, ev in
-                        ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
-                            chip(ev)
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
+            wire
         }
         .padding(.vertical, 10)
         .background(Palette.surface.opacity(0.4))
         .overlay(Rectangle().fill(Palette.border).frame(height: 1), alignment: .bottom)
+        .background(
+            GeometryReader { g in
+                Color.clear
+                    .onAppear { containerWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, w in containerWidth = w }
+            }
+        )
+    }
+
+    /// One row of chips. `measured: true` reports its width for the marquee math.
+    private func chipRow(measured: Bool) -> some View {
+        HStack(spacing: 8) {
+            ForEach(events) { ev in
+                chip(ev)
+            }
+        }
+        .background(
+            Group {
+                if measured {
+                    GeometryReader { g in
+                        Color.clear
+                            .onAppear { rowWidth = g.size.width }
+                            .onChange(of: g.size.width) { _, w in rowWidth = w }
+                    }
+                }
+            }
+        )
+    }
+
+    /// The ticker itself. When the chips overflow the rail it pans slowly and
+    /// continuously (looping seamlessly via a doubled row); when they fit, it
+    /// just sits still. The pan phase is derived from the wall clock, so data
+    /// refreshes never make it jump — chips keep drifting from wherever they are.
+    @ViewBuilder
+    private var wire: some View {
+        if rowWidth > containerWidth, containerWidth > 0 {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                let span = rowWidth + 8
+                let t = ctx.date.timeIntervalSinceReferenceDate
+                let offset = -CGFloat((t * panSpeed).truncatingRemainder(dividingBy: Double(span)))
+                HStack(spacing: 8) {
+                    chipRow(measured: true)
+                    chipRow(measured: false)
+                }
+                .offset(x: offset)
+            }
+            .frame(width: max(containerWidth, 1), alignment: .leading)
+            .clipped()
+        } else {
+            chipRow(measured: true)
+                .padding(.horizontal, 16)
+        }
     }
 
     private var header: some View {

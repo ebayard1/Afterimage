@@ -63,6 +63,9 @@ struct AlbumDetailView: View {
                 shotService.startListening(albumId: albumId, currentUserId: uid)
             }
         }
+        // Firestore listeners don't self-remove on dealloc — every push/pop
+        // without this leaked a live listener and its snapshot traffic.
+        .onDisappear { shotService.stopListening() }
         .fullScreenCover(isPresented: $showCamera) {
             CameraView(album: album, showsCloseButton: true)
                 // Pure black behind the shell, matching the camera tab.

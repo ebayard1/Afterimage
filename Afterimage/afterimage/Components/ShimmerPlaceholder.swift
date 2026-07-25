@@ -6,20 +6,18 @@ struct ShimmerPlaceholder: View {
     @State private var phase: CGFloat = -1
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.04)) { _ in
-            GeometryReader { geo in
-                LinearGradient(
-                    colors: [
-                        Palette.surface,
-                        Color(red: 0.13, green: 0.11, blue: 0.10),
-                        Palette.surface
-                    ],
-                    startPoint: UnitPoint(x: phase, y: 0),
-                    endPoint: UnitPoint(x: phase + 0.6, y: 0)
-                )
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
+        // The repeatForever animation on `phase` drives the sweep by itself —
+        // the old 25 Hz TimelineView wrapper was pure redundant re-render (and
+        // a cold feed can have a hundred of these on screen at once).
+        LinearGradient(
+            colors: [
+                Palette.surface,
+                Color(red: 0.13, green: 0.11, blue: 0.10),
+                Palette.surface
+            ],
+            startPoint: UnitPoint(x: phase, y: 0),
+            endPoint: UnitPoint(x: phase + 0.6, y: 0)
+        )
         .onAppear { startShimmer() }
     }
 

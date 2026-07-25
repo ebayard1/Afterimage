@@ -16,8 +16,18 @@ struct RollSlideshowView: View {
     /// Shots passed in by the caller (sample mode). In real mode this is empty
     /// and we load the album's shots live via `shotService`.
     private let initialShots: [Shot]
-    /// Effective shots used throughout the view.
-    private var shots: [Shot] { initialShots.isEmpty ? shotService.shots : initialShots }
+    /// The deck actually shown, FROZEN at first load. The live listener keeps
+    /// firing during the show (new shots, reactions, cache→server settles) and
+    /// replacing the array mid-flip made `index` silently point at a different
+    /// photo — "next" showed the wrong picture. Freezing the deck pins every
+    /// index to one photo for the whole show.
+    @State private var deck: [Shot] = []
+    /// Effective shots used throughout the view (falls back to live data only
+    /// until the deck freezes).
+    private var shots: [Shot] {
+        if !deck.isEmpty { return deck }
+        return initialShots.isEmpty ? shotService.shots : initialShots
+    }
 
     init(album: Album, shots: [Shot]) {
         self.album = album
@@ -80,6 +90,17 @@ struct RollSlideshowView: View {
                     }
                 }
 
+                // The incoming photo is still downloading — show a spinner so a
+                // "next" tap visibly landed (the clock is held meanwhile).
+                if let shot = currentShot, !shot.isVideo,
+                   let url = URL(string: shot.photoURL),
+                   FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) == nil {
+                    ProgressView()
+                        .tint(.white.opacity(0.85))
+                        .scaleEffect(1.3)
+                        .allowsHitTesting(false)
+                }
+
                 LinearGradient(colors: [.black.opacity(0.5), .clear, .black.opacity(0.85)],
                                startPoint: .top, endPoint: .bottom)
                     .ignoresSafeArea()
@@ -129,13 +150,23 @@ struct RollSlideshowView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            if !initialShots.isEmpty { deck = initialShots }
             if let id = album.id {
                 shotService.startListening(albumId: id, currentUserId: auth.uid ?? "")
             }
+            prefetch(around: index)
             startTimer()
+        }
+        .onChange(of: shotService.shots.count) { _, _ in
+            // First non-empty listener result freezes the deck for the show.
+            if deck.isEmpty, !shotService.shots.isEmpty {
+                deck = shotService.shots
+                prefetch(around: index)
+            }
         }
         .onDisappear {
             stopTimer()
+            shotService.stopListening()
         }
     }
 
@@ -325,6 +356,18 @@ struct RollSlideshowView: View {
         index = newIndex
         progress = 0
         frontOpacity = 1   // instant — hard cut
+        prefetch(around: newIndex)
+    }
+
+    /// Warm the next couple of photos so a tap lands on an already-decoded
+    /// frame instead of a blank wait.
+    private func prefetch(around i: Int) {
+        for j in (i + 1)...(i + 2) {
+            guard j >= 0, j < shots.count else { continue }
+            let shot = shots[j]
+            guard !shot.isVideo, let url = URL(string: shot.photoURL) else { continue }
+            SlideshowPhoto.warm(url: url)
+        }
     }
 
     private func dismissSlideshow() {
@@ -341,6 +384,12 @@ struct RollSlideshowView: View {
                 if isPaused { return }            // press-and-hold freezes progress
                 if shots.isEmpty { return }       // real mode: still loading
                 if currentShot?.isVideo == true { return }   // video drives its own advance
+                // Don't run the clock on a photo that hasn't appeared yet —
+                // otherwise slow loads get silently skipped over.
+                if let shot = currentShot, let url = URL(string: shot.photoURL),
+                   FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) == nil {
+                    return
+                }
                 progress += 0.05 / cue(forIndex: index)
                 if progress >= 1.0 {
                     if index >= shots.count - 1 {
@@ -472,16 +521,32 @@ private struct SlideshowPhoto: View {
             .offset(x: offsetX)
     }
 
+    /// Longest side a slideshow decode keeps, in pixels — full-screen quality
+    /// on any current iPhone at a fraction of a camera JPEG's decode cost.
+    static let maxPixelSize: CGFloat = 2600
+
+    /// Download + decode `url` into the full-screen cache tier ahead of time.
+    /// No-op if it's already cached; fire-and-forget on a background task.
+    static func warm(url: URL) {
+        guard FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) == nil else { return }
+        Task.detached(priority: .utility) {
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let img = FilmImageCache.decodeDownsampled(data, maxDimension: maxPixelSize)
+            else { return }
+            FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
+        }
+    }
+
     private func load() async {
         guard let url else { await MainActor.run { image = nil }; return }
-        if let cached = FilmImageCache.shared.object(forKey: url as NSURL) {
+        if let cached = FilmImageCache.shared.object(forKey: FilmImageCache.fullKey(url)) {
             await MainActor.run { image = cached }
             return
         }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            if let img = UIImage(data: data) {
-                FilmImageCache.shared.setObject(img, forKey: url as NSURL)
+            if let img = FilmImageCache.decodeDownsampled(data, maxDimension: Self.maxPixelSize) {
+                FilmImageCache.insert(img, forKey: FilmImageCache.fullKey(url))
                 await MainActor.run { image = img }
             }
         } catch {

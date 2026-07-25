@@ -39,7 +39,6 @@ struct CameraView: View {
     @State private var camera = CameraController()
     @State private var shotService = ShotService()
     @State private var isUploading = false
-    @State private var showConfirmation = false
     @State private var flashOn: Bool = false
     @State private var usingFront: Bool = false
     /// Focus ring position, in the viewfinder's own coordinate space.
@@ -53,6 +52,14 @@ struct CameraView: View {
     @State private var isPressingShutter = false
     @State private var recordStart: Date?
     @State private var recordHoldWork: DispatchWorkItem?
+    /// Auto-stops the recording at the 30-second cap even if the finger is
+    /// still down.
+    @State private var recordLimitWork: DispatchWorkItem?
+    /// True once this press started a recording — so a release after the
+    /// 30s auto-stop doesn't fall through and fire a photo.
+    @State private var pressStartedVideo = false
+    /// Hard cap on a single video recording.
+    static let maxVideoSeconds: TimeInterval = 30
     /// Flash press cycle: after release, the NEW state's pressed frame shows
     /// for one beat before settling on its rest frame (On-rest → On-pressed →
     /// Off-pressed → Off-rest, and the reverse when toggling back).
@@ -291,26 +298,6 @@ struct CameraView: View {
             // viewfinder glass. The black-out is the "permanence" moment.
             if flashFlash { Color.white.transition(.opacity) }
             if blackOut { Color.black.transition(.opacity) }
-
-            if showConfirmation {
-                ZStack {
-                    Color.black.opacity(0.85)
-                    VStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 36))
-                            .foregroundStyle(Palette.gold)
-                        Text("film contributed")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Palette.gold)
-                        Text("sealed until sunrise")
-                            .font(.system(size: 11)).italic()
-                            .foregroundStyle(Palette.textTertiary)
-                    }
-                }
-                .transition(.opacity)
-                // Don't swallow taps — the shutter is already re-armed.
-                .allowsHitTesting(false)
-            }
         }
         // Overfill the white screen cutout by ~5pt-of-shell on every side so the
         // live video spills onto the black printed bezel and NO white rim (or
@@ -318,13 +305,14 @@ struct CameraView: View {
         .frame(width: box.width + 10 * s, height: box.height + 10 * s)
         .clipShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
-        // REC readout lives INSIDE the glass, camcorder-style — top-left
-        // corner of the viewfinder while recording.
+        // REC readout lives INSIDE the glass, camcorder-style — tucked hard
+        // into the top-left corner of the viewfinder so it stays out of the
+        // picture while recording.
         .overlay(alignment: .topLeading) {
             if isRecording {
                 recordingTimer
-                    .padding(.leading, 16)
-                    .padding(.top, 14)
+                    .padding(.leading, 4)
+                    .padding(.top, 4)
                     .allowsHitTesting(false)
             }
         }
@@ -448,16 +436,16 @@ struct CameraView: View {
     private var recordingTimer: some View {
         TimelineView(.periodic(from: Date(), by: 0.2)) { ctx in
             let secs = recordStart.map { max(0, ctx.date.timeIntervalSince($0)) } ?? 0
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 // Camcorder dot — blinks once a second.
-                Circle().fill(.red).frame(width: 8, height: 8)
+                Circle().fill(.red).frame(width: 6, height: 6)
                     .opacity(Int(secs * 2) % 2 == 0 ? 1 : 0.25)
-                Text("REC \(Self.timeString(secs))")
-                    .font(.custom("Menlo", size: 13).weight(.bold))
+                Text("REC \(Self.timeString(min(secs, Self.maxVideoSeconds)))")
+                    .font(.custom("Menlo", size: 11).weight(.bold))
                     .foregroundStyle(.white)
             }
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Capsule().fill(.black.opacity(0.6)))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(.black.opacity(0.45)))
         }
         .transition(.opacity)
     }
@@ -472,6 +460,7 @@ struct CameraView: View {
             .onChanged { _ in
                 guard !isPressingShutter else { return }
                 isPressingShutter = true
+                pressStartedVideo = false
                 // Physical click the instant the shutter is pressed in.
                 UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.8)
                 guard !isUploading, remainingShots > 0 else { return }
@@ -487,6 +476,9 @@ struct CameraView: View {
                 if isRecording {
                     finishRecording()
                 } else {
+                    // A press whose recording already auto-stopped at the cap
+                    // is spent — releasing must not also fire a photo.
+                    guard !pressStartedVideo else { return }
                     guard !isUploading, remainingShots > 0 else { return }
                     capture()
                 }
@@ -496,6 +488,7 @@ struct CameraView: View {
     private func beginRecording() {
         guard !isRecording, !isUploading, remainingShots > 0 else { return }
         isRecording = true
+        pressStartedVideo = true
         // Run the red frames in sequence: RecordPressed for one beat, then
         // the full RecordRest face for the rest of the recording.
         recordFaceSettled = false
@@ -506,10 +499,15 @@ struct CameraView: View {
         recordStart = Date()
         UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         camera.startRecording()
+        // Auto-stop at the cap — releasing the shutter earlier cancels this.
+        let limit = DispatchWorkItem { finishRecording() }
+        recordLimitWork = limit
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxVideoSeconds, execute: limit)
     }
 
     private func finishRecording() {
         guard isRecording else { return }
+        recordLimitWork?.cancel(); recordLimitWork = nil
         withAnimation(Motion.crisp) { isRecording = false }
         recordStart = nil
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
@@ -526,7 +524,12 @@ struct CameraView: View {
                 return
             }
             guard let albumId = album.id, let uid = auth.uid else { return }
-            let poster = camera.posterFrame(from: url) ?? Self.blackPoster()
+            // Poster extraction decodes a full video frame — keep it off the
+            // main thread so the shutter doesn't hitch right at release.
+            let extracted = await Task.detached { [camera] in
+                camera.posterFrame(from: url)
+            }.value
+            let poster = extracted ?? Self.blackPoster()
             // Background upload — never blocks the next shot.
             Task {
                 var place: (latitude: Double, longitude: Double, name: String?)?
@@ -537,7 +540,6 @@ struct CameraView: View {
                         note: "", latitude: place?.latitude, longitude: place?.longitude,
                         locationName: place?.name
                     )
-                    toast.success("added to the roll")
                 } catch {
                     optimisticShotCount = max(0, optimisticShotCount - 1)   // roll back the tick
                     toast.error(error.localizedDescription)
@@ -619,14 +621,6 @@ struct CameraView: View {
                 return
             }
 
-            // Light, non-blocking confirmation flourish (does not block tapping
-            // the shutter again — see `.allowsHitTesting(false)` on the overlay).
-            withAnimation { showConfirmation = true }
-            Task {
-                try? await Task.sleep(nanoseconds: 650_000_000)
-                withAnimation { showConfirmation = false }
-            }
-
             // Background upload. Each shot uploads independently; rapid-fire
             // shots simply enqueue more concurrent uploads.
             Task {
@@ -644,7 +638,6 @@ struct CameraView: View {
                         longitude: place?.longitude,
                         locationName: place?.name
                     )
-                    toast.success("added to the roll")
                 } catch {
                     optimisticShotCount = max(0, optimisticShotCount - 1)   // roll back the tick
                     toast.error(error.localizedDescription)
