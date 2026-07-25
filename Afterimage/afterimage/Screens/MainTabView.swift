@@ -51,7 +51,14 @@ struct MainTabView: View {
             // exactly as before; only the camera actually goes under the island.
             .ignoresSafeArea(edges: .top)
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            .safeAreaInset(edge: .bottom, spacing: 0) { compactBar(height: barHeight) }
+            // The bar FLOATS OVER the pages instead of insetting them
+            // (safeAreaInset reserved the strip, so nothing ever rendered
+            // behind the pill — and Liquid Glass over the empty black window
+            // background shows nothing; it needs real content underneath to
+            // refract). Feed cards now scroll beneath the glass, and the
+            // content margin keeps the last rows reachable above it.
+            .overlay(alignment: .bottom) { compactBar(height: barHeight) }
+            .contentMargins(.bottom, barHeight, for: .scrollContent)
             // On the camera page the whole screen IS the device — hide the
             // system status bar (clock / battery / signal) so nothing floats
             // over the shell. Rolls and Profile keep it.
@@ -79,7 +86,13 @@ struct MainTabView: View {
         }
         .frame(height: 52)
         .padding(.horizontal, 22)
-        .glassEffect(.regular, in: Capsule())
+        // Interactive glass with a white luminance lift. Raw glass is a
+        // refraction of what's behind it — over this app's near-black canvas
+        // that refracts to… black, i.e. invisible. The system tab bar's
+        // Liquid Glass stays milky over dark content because it lifts its
+        // own luminance; the tint reproduces that so the pill reads as glass
+        // everywhere, brightening further as feed cards scroll beneath it.
+        .glassEffect(.regular.tint(.white.opacity(0.14)).interactive(), in: Capsule())
         .padding(.horizontal, 56)
         .frame(height: height)
         .frame(maxWidth: .infinity)

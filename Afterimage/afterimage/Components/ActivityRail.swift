@@ -9,41 +9,70 @@ struct ActivityRail: View {
     var onTapEvent: (ActivityEvent) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Which chip the ticker is parked on — advances on a timer so the rail
-    /// "reads out" the wire on its own; a manual drag still works.
-    @State private var tickerIndex = 0
-    private let tickerTimer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
+    /// Measured size of ONE copy of the chip row (incl. trailing gap) — the
+    /// marquee wraps on this period so the loop is seamless.
+    @State private var rowSize: CGSize = .zero
+
+    /// Marquee drift speed, points per second. Slow "news wire" crawl.
+    private let crawlSpeed: Double = 26
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            ScrollViewReader { proxy in
+            // A continuous slow crawl (like a newsroom wire), not a stepped
+            // scroll. The row is duplicated and offset by a clock-driven
+            // phase that wraps at one copy's width, so it loops seamlessly.
+            // Static (and manually scrollable) under Reduce Motion or when
+            // there's only one update.
+            if reduceMotion || events.count <= 1 || rowSize == .zero {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(events.enumerated()), id: \.element.id) { idx, ev in
-                            ScrollFadeIn(delay: Double(idx) * 0.04, distance: 10) {
-                                chip(ev)
-                            }
-                            .id(idx)
-                        }
-                    }
-                    .padding(.horizontal, 16)
+                    measuredChipRow.padding(.horizontal, 16)
                 }
-                .onReceive(tickerTimer) { _ in
-                    // Auto-advance through the updates, wrapping back to the
-                    // start — a slow newsstand ticker. Static under Reduce
-                    // Motion or when there's nothing to cycle through.
-                    guard !reduceMotion, events.count > 1 else { return }
-                    tickerIndex = (tickerIndex + 1) % events.count
-                    withAnimation(.easeInOut(duration: 0.7)) {
-                        proxy.scrollTo(tickerIndex, anchor: .leading)
-                    }
-                }
+            } else {
+                marquee
             }
         }
         .padding(.vertical, 10)
         .background(Palette.surface.opacity(0.4))
         .overlay(Rectangle().fill(Palette.border).frame(height: 1), alignment: .bottom)
+    }
+
+    private var chipRow: some View {
+        HStack(spacing: 8) {
+            ForEach(events) { ev in
+                chip(ev)
+            }
+        }
+        .fixedSize()
+    }
+
+    /// One copy of the row that also reports its size — keeps `rowSize`
+    /// current when live events arrive and the row grows.
+    private var measuredChipRow: some View {
+        chipRow
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { rowSize = $0 }
+    }
+
+    private var marquee: some View {
+        // The loop period is one row copy plus the 8pt gap between copies.
+        let period = rowSize.width + 8
+        // Enough copies to cover the screen plus one period of travel.
+        let copies = max(2, Int(ceil(UIScreen.main.bounds.width / period)) + 1)
+        return TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = CGFloat((t * crawlSpeed).truncatingRemainder(dividingBy: Double(period)))
+            HStack(spacing: 8) {
+                measuredChipRow
+                ForEach(1..<copies, id: \.self) { _ in
+                    chipRow
+                }
+            }
+            .fixedSize()
+            .offset(x: -phase)
+        }
+        .frame(height: rowSize.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 
     private var header: some View {

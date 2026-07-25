@@ -118,6 +118,12 @@ final class ShotService {
         let posterMeta = StorageMetadata(); posterMeta.contentType = "image/jpeg"
         let videoMeta = StorageMetadata(); videoMeta.contentType = "video/quicktime"
 
+        // The temp recording is single-use: there is no retry queue, so the
+        // file is garbage the moment this function exits EITHER way. Leaving
+        // it behind on failure let 200MB .movs pile up in tmp — this was the
+        // app's runaway "Documents & Data" footprint.
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
         let posterURL: String
         let videoURL: String
         do {
@@ -153,8 +159,6 @@ final class ShotService {
                 NSLocalizedDescriptionKey: "saving shot failed: \(error.localizedDescription)"
             ])
         }
-        // Clean up the temp recording now it's safely uploaded.
-        try? FileManager.default.removeItem(at: fileURL)
     }
 
     func toggleReaction(shotId: String, albumId: String, userId: String, emoji: String) async throws {

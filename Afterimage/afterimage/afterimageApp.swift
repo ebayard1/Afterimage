@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate, UNU
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         FirebaseApp.configure()
+        sweepStaleRecordings()
 
         Messaging.messaging().delegate = self
         UNUserNotificationCenter.current().delegate = self
@@ -35,6 +36,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate, MessagingDelegate, UNU
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Messaging.messaging().apnsToken = deviceToken
+    }
+
+    /// One-time launch sweep: delete camera recordings stranded in tmp by
+    /// past failed uploads (each can be up to 200MB — these were what made
+    /// the app's storage footprint balloon). Anything older than a day is
+    /// definitively garbage; an in-flight upload's file is always younger.
+    private func sweepStaleRecordings() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory
+            guard let files = try? fm.contentsOfDirectory(
+                at: tmp, includingPropertiesForKeys: [.contentModificationDateKey]
+            ) else { return }
+            let cutoff = Date().addingTimeInterval(-24 * 3600)
+            for url in files where url.pathExtension.lowercased() == "mov" {
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                if modified < cutoff { try? fm.removeItem(at: url) }
+            }
+        }
     }
 
     // MARK: MessagingDelegate
