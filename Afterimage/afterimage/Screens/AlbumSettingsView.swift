@@ -15,7 +15,10 @@ struct AlbumSettingsView: View {
     @State private var name: String
     @State private var showDeleteConfirm = false
     @State private var showLeaveConfirm = false
-    @State private var albumService = AlbumService()
+    /// Shared instance owned by `ContentView`. `leave` optimistically drops the
+    /// roll from the local list — with one shared instance that now vanishes
+    /// from Rolls, Camera and Profile at the same moment.
+    @Environment(AlbumService.self) private var albumService
     let onAlbumGone: () -> Void
 
     init(album: Album, onAlbumGone: @escaping () -> Void) {

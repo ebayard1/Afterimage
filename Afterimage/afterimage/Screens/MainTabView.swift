@@ -42,8 +42,9 @@ struct MainTabView: View {
                     .tag(Tab.rolls)
 
                 CameraTabView(isActive: selectedTab == .camera && scenePhase == .active)
-                    // Gates the counter badge's warmthFlicker and the
-                    // FlashReadyLED, which otherwise pulse behind the feed.
+                    // Gates the counter badge's warmthFlicker, which otherwise
+                    // pulses behind the feed — the paged TabView keeps this
+                    // page mounted whichever tab you're on.
                     .environment(\.ambientMotionPaused,
                                  selectedTab != .camera || scenePhase != .active)
                     .tag(Tab.camera)

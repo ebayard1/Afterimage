@@ -6,6 +6,10 @@ struct AlbumDetailView: View {
     @Environment(AuthService.self) private var auth
     @Environment(UserService.self) private var users
     @Environment(ToastCenter.self) private var toast
+    /// Only forwarded on to `AlbumSettingsView` (rename / leave / delete) —
+    /// this screen's own data comes from `shotService`. Held here so the
+    /// settings sheet is handed the app's single shared instance explicitly.
+    @Environment(AlbumService.self) private var albumService
     @Environment(\.dismiss) private var dismiss
     @State private var shotService = ShotService()
     @State private var showCamera = false
@@ -99,6 +103,7 @@ struct AlbumDetailView: View {
             }
             .environment(auth)
             .environment(toast)
+            .environment(albumService)
         }
         .fullScreenCover(isPresented: $showRecap) {
             RecapView(album: album, shots: displayShots)

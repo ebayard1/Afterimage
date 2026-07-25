@@ -5,7 +5,8 @@ struct JoinAlbumView: View {
     @Environment(AuthService.self) private var auth
     @Environment(ToastCenter.self) private var toast
     @Environment(\.dismiss) private var dismiss
-    @State private var albumService = AlbumService()
+    /// Shared instance owned by `ContentView` — see `CreateAlbumView`.
+    @Environment(AlbumService.self) private var albumService
     @State private var albumCode = ""
     @State private var isLoading = false
     @State private var errorMessage: String?

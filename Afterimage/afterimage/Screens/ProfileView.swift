@@ -15,8 +15,11 @@ import Combine
 struct ProfileView: View {
     @Environment(AuthService.self) private var auth
     @Environment(UserService.self) private var users
-    @State private var albumService = AlbumService()
-    @State private var notifService = NotificationService()
+    // Shared instances owned by `ContentView` — see the note in `AlbumService`.
+    // Profile stays mounted behind the other pages, so a `@State` service here
+    // meant a second copy of both listeners running permanently.
+    @Environment(AlbumService.self) private var albumService
+    @Environment(NotificationService.self) private var notifService
 
     private var friendCount: Int { users.currentProfile?.friendIds.count ?? 0 }
 
@@ -156,17 +159,19 @@ struct ProfileView: View {
             .navigationDestination(for: Album.self) { album in
                 AlbumDetailView(album: album)
                     .environment(auth)
+                    .environment(albumService)
             }
         }
         .onReceive(ticker) { now = $0 }
-        .task {
-            if let uid = auth.uid {
-                albumService.startListening(userId: uid)
-                notifService.startListening(uid: uid)
-            }
-        }
+        // Albums and notifications are already listening — `ContentView` starts
+        // them from the auth uid. Sheets/covers below are handed the shared
+        // services explicitly, exactly as `auth` always has been: a missing
+        // `@Environment(Service.self)` is a runtime trap, not a build error.
         .sheet(isPresented: $showFriends) { FriendsListView() }
-        .sheet(isPresented: $showNotifications) { NotificationsView() }
+        .sheet(isPresented: $showNotifications) {
+            NotificationsView()
+                .environment(notifService)
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environment(auth)
@@ -179,6 +184,8 @@ struct ProfileView: View {
         }
         .fullScreenCover(isPresented: $showMap) {
             RollMapView()
+                .environment(auth)
+                .environment(albumService)
         }
         .fullScreenCover(isPresented: $showPhotoCapture) {
             ProfilePhotoCaptureView()
