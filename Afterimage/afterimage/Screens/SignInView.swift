@@ -1,4 +1,5 @@
 import SwiftUI
+import FirebaseAuth
 
 // MARK: - SignInView (anti-default rewrite)
 //
@@ -419,10 +420,33 @@ struct SignInView: View {
                 }
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = Self.friendlyAuthMessage(for: error)
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
             isLoading = false
+        }
+    }
+
+    /// Firebase's raw messages confuse more than they help — notably
+    /// "credential is malformed or has expired", which (with email
+    /// enumeration protection on) is just its generic wrong-email-or-password
+    /// error. Translate the common codes; fall through for the rest.
+    private static func friendlyAuthMessage(for error: Error) -> String {
+        switch AuthErrorCode(rawValue: (error as NSError).code) {
+        case .invalidCredential, .wrongPassword, .userNotFound:
+            return "wrong email or password"
+        case .invalidEmail:
+            return "that doesn't look like an email address"
+        case .emailAlreadyInUse:
+            return "that email already has a darkroom — sign in instead"
+        case .weakPassword:
+            return "password needs at least 6 characters"
+        case .networkError:
+            return "no connection — try again"
+        case .tooManyRequests:
+            return "too many attempts — wait a minute and try again"
+        default:
+            return error.localizedDescription
         }
     }
 }
