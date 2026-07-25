@@ -118,7 +118,32 @@ struct CameraView: View {
         /// light-ON shell art, edges feathered 16px so the crop blends
         /// seamlessly over the shell. Lamp core ≈ (798, 1264).
         static let lampRect = CGRect(x: 683, y: 1149, width: 221, height: 233)
+        /// Zoom wheel — the ridged dial on the lower right of the shell.
+        /// `wheelRect` is the moving window over the STRAIGHT middle of the
+        /// baked wheel; the wheel's curved ends stay static (part of the
+        /// shell art) and the scrolling ridge tile feathers into them.
+        /// The `WheelRidges` tile is sliced from this exact region of the
+        /// shell art, so color and lighting match by construction.
+        static let wheelRect = CGRect(x: 744, y: 1400, width: 72, height: 255)
+        static let wheelTileHeight: CGFloat = 128   // 8 ridges, seamless loop
+        static let wheelRidgePitch: CGFloat = 16    // shell px per ridge
     }
+
+    // MARK: Zoom — the wheel and the pinch both drive one zoom factor.
+
+    /// Current zoom (1×…5×), applied to the capture device live.
+    @State private var zoomFactor: CGFloat = 1
+    @State private var wheelDragStartZoom: CGFloat?
+    @State private var pinchStartZoom: CGFloat?
+    /// Last ridge index that fired a tick haptic.
+    @State private var lastRidgeTick = 0
+
+    private static let zoomRange: ClosedRange<CGFloat> = 1...5
+    /// Shell px of wheel travel per 1.0× of zoom — one ridge per 0.1×.
+    private static let travelPerZoom: CGFloat = 160
+
+    /// Accumulated wheel travel in shell px for the current zoom.
+    private var wheelTravel: CGFloat { (zoomFactor - 1) * Self.travelPerZoom }
 
     var body: some View {
         GeometryReader { geo in
@@ -191,6 +216,9 @@ struct CameraView: View {
                                 label: usingFront ? "Switch to rear camera" : "Switch to front camera",
                                 hint: "Flips between front and rear cameras") {
                         usingFront.toggle()
+                        // A flip lands on a fresh device — zoom resets with it.
+                        zoomFactor = 1
+                        lastRidgeTick = 0
                         Task { await camera.flip(toFront: usingFront) }
                     }
 
@@ -202,6 +230,10 @@ struct CameraView: View {
                 // Shutter: tap = photo · press-and-hold = record video. The red
                 // record face replaces the shutter while holding.
                 shutterControl(scale: s, originX: originX)
+
+                // Zoom wheel — the baked dial spins as the zoom changes
+                // (drag it, or pinch the viewfinder).
+                zoomWheel(scale: s, originX: originX)
 
                 // Frame counter — vertically CENTRED on the flash button (its
                 // centre is Shell.flashCenter.y in shell space), pinned to the
@@ -319,6 +351,17 @@ struct CameraView: View {
         .onTapGesture { location in
             handleTap(location, boxSize: CGSize(width: box.width, height: box.height))
         }
+        // Pinch to zoom — drives the same factor as the wheel, so the wheel
+        // visibly spins while you pinch.
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    if pinchStartZoom == nil { pinchStartZoom = zoomFactor }
+                    guard let start = pinchStartZoom else { return }
+                    applyZoom(start * value.magnification)
+                }
+                .onEnded { _ in pinchStartZoom = nil }
+        )
         .position(x: box.midX, y: box.midY)
     }
 
@@ -431,6 +474,80 @@ struct CameraView: View {
         .gesture(shutterGesture())
         .accessibilityLabel(isRecording ? "Stop recording" : "Shutter")
         .accessibilityHint("Tap to take a photo. Press and hold to record a video.")
+    }
+
+    // MARK: Zoom wheel — a looping ridge tile scrolls inside a feathered
+    // window over the baked wheel. The tile is cut from the shell art itself,
+    // so only the ridge motion is new; the housing, curved ends, lighting and
+    // +/− labels are the untouched shell underneath. (This is the classic
+    // fake-3D wheel: static housing + moving texture + static edge shading.)
+
+    private func zoomWheel(scale s: CGFloat, originX: CGFloat) -> some View {
+        let w = Shell.wheelRect.width * s
+        let h = Shell.wheelRect.height * s
+        let tileH = Shell.wheelTileHeight * s
+        // Zoom in → travel up. Offset stays in (−tileH, 0], and three stacked
+        // tiles (384 shell px) always cover the 255 px window.
+        let shift = -(wheelTravel * s).truncatingRemainder(dividingBy: tileH)
+        return VStack(spacing: 0) {
+            ForEach(0..<3) { _ in
+                Image("WheelRidges")
+                    .resizable()
+                    .frame(width: w, height: tileH)
+            }
+        }
+        .offset(y: shift)
+        .frame(width: w, height: h, alignment: .top)
+        .clipped()
+        // Soft capsule mask: the moving texture fades into the baked wheel's
+        // curved ends and housing shadow instead of ending on a hard line.
+        .mask(
+            RoundedRectangle(cornerRadius: w / 2, style: .continuous)
+                .padding(.vertical, 16 * s)
+                .padding(.horizontal, 2 * s)
+                .blur(radius: 9 * s)
+        )
+        .contentShape(Rectangle())
+        .position(x: originX + Shell.wheelRect.midX * s,
+                  y: Shell.wheelRect.midY * s)
+        .gesture(wheelDragGesture(scale: s))
+        .accessibilityElement()
+        .accessibilityLabel("Zoom wheel")
+        .accessibilityValue(String(format: "%.1fx", zoomFactor))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: applyZoom(zoomFactor + 0.2)
+            case .decrement: applyZoom(zoomFactor - 0.2)
+            @unknown default: break
+            }
+        }
+    }
+
+    /// Drag the wheel like the real thing: up (toward +) zooms in.
+    private func wheelDragGesture(scale s: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if wheelDragStartZoom == nil {
+                    wheelDragStartZoom = zoomFactor
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.5)
+                }
+                guard let start = wheelDragStartZoom else { return }
+                applyZoom(start - value.translation.height * 0.008)
+            }
+            .onEnded { _ in wheelDragStartZoom = nil }
+    }
+
+    /// Clamp, push to the device, spin the wheel, tick per ridge.
+    private func applyZoom(_ proposed: CGFloat) {
+        let clamped = min(max(proposed, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+        guard clamped != zoomFactor else { return }
+        zoomFactor = clamped
+        camera.setZoom(clamped)
+        let ridge = Int((wheelTravel / Shell.wheelRidgePitch).rounded(.down))
+        if ridge != lastRidgeTick {
+            lastRidgeTick = ridge
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
     }
 
     private var recordingTimer: some View {
@@ -789,6 +906,22 @@ nonisolated final class CameraController: NSObject, AVCapturePhotoCaptureDelegat
     func setFlash(_ mode: AVCaptureDevice.FlashMode) {
         queue.async { [self] in
             self.flashMode = mode
+        }
+    }
+
+    /// Set the capture device's zoom factor, clamped to what the hardware
+    /// supports (capped at 6× so digital zoom never gets mushy). Applies to
+    /// the live preview, photos, and video alike.
+    func setZoom(_ factor: CGFloat) {
+        queue.async { [self] in
+            guard let device = currentInput?.device else { return }
+            let clamped = min(max(factor, device.minAvailableVideoZoomFactor),
+                              min(device.maxAvailableVideoZoomFactor, 6))
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clamped
+                device.unlockForConfiguration()
+            } catch { /* ignore */ }
         }
     }
 

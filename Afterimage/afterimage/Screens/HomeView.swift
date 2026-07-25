@@ -100,11 +100,16 @@ struct HomeView: View {
                             ActivityRail(events: railEvents)
                                 .padding(.bottom, 8)
 
-                            // LazyVStack: cards build as they scroll into view
-                            // instead of the whole account at once — every card
-                            // carries live listeners and animation clocks, so
-                            // eager construction scaled cost with account size.
-                            LazyVStack(alignment: .leading, spacing: 28) {
+                            // MUST stay an eager VStack. The roll cards are
+                            // built from flexible, screen-measured layers
+                            // (GeometryReader glow preferences, maxHeight
+                            // spacers in the strip overlays, full-bleed
+                            // breakouts) that need a concrete proposed height;
+                            // a lazy container proposes nil and the layout
+                            // collapses into stretched frames and black gaps.
+                            // Tried in Jul 2026 — broke the page. Laziness here
+                            // requires giving every card a fixed height first.
+                            VStack(alignment: .leading, spacing: 28) {
                                 if let memory = onThisDay {
                                     OnThisDayCard(memory: memory) {
                                         // Open the memory's album just like tapping it in the feed.
